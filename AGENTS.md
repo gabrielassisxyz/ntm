@@ -28,17 +28,32 @@ If I tell you to do something, even if it goes against what follows below, YOU M
 
 ---
 
-## Git Branch: `main` Only
+## Git Branches: `main` Is the Reference, Work Happens in Worktrees
 
-**This repository uses exactly one branch: `main`.**
+**`main` is the only long-lived branch, and the main tree (the checkout at the repo's root
+path) stays on it as a clean reference — nobody commits there directly.** Every unit of work
+gets its own git worktree and its own short-lived branch, created with `scripts/worktree.sh
+new <type>/<desc>` (e.g. `agent/bd-123`), branched off a freshly fetched `origin/main`, merged
+back through a PR, then removed. This is what the repo's own history already does —
+`agent/<bead-id>` branches merged through pull requests — so it replaces the older "exactly
+one branch, no side branches" rule that history had already contradicted.
 
-- **All work happens on `main`** — commits, PRs, and automation all target `main`
-- **Do not create, use, or sync `master`** — if you see branch logic that references `master`, remove it
-- **Do not create or keep side branches like `beads-sync`** unless I explicitly direct it for a temporary workflow
+- A worktree made any other way (a raw `git worktree add`) starts with `.beads/beads.db`
+  missing, because it is git-ignored — `br` inside it silently falls back to the stale
+  committed `.beads/issues.jsonl` snapshot instead of the live tracker, so both reads and
+  writes there are wrong. `scripts/worktree.sh new` avoids this by writing `.beads/redirect`
+  (a file `br` already understands) pointing at the main tree's live database;
+  `scripts/worktree.sh adopt <path>` repairs a worktree that was made the wrong way.
+- `scripts/worktree.sh rm <branch|task>` removes a worktree once its branch is merged — it
+  refuses to discard uncommitted changes, unpushed commits, or worktree-only files unless
+  forced with `-f`.
+- **Do not create, use, or sync `master`** — if you see branch logic that references it,
+  remove it.
+- **Do not create or keep a long-lived side branch** (e.g. a permanent `beads-sync` branch)
+  outside this per-task worktree flow, unless directed for a temporary workflow.
 
-**If you see non-`main` branch handling in code or docs:**
-1. Update it to `main`
-2. Remove any implication that `master` or another long-lived branch should exist
+**If you see docs or code assuming every agent shares one `main` checkout, update them to
+describe the worktree-per-task flow instead.**
 
 ---
 
