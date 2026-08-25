@@ -3103,20 +3103,28 @@ func TestGetPanesRecoversPiTypeAfterTitleRewrite(t *testing.T) {
 		t.Fatalf("write fake pi executable: %v", err)
 	}
 
-	launch := func() {
-		if err := SendKeys(session, piScript+" 30", true); err != nil {
-			t.Fatalf("launch fake pi in pane: %v", err)
-		}
+	initial, err := GetPanes(session)
+	if err != nil || len(initial) != 1 {
+		t.Fatalf("initial panes = %d, err = %v; want one pane", len(initial), err)
 	}
-	launch()
+	paneID := initial[0].ID
 
-	// A freshly created pane's shell may still be sourcing its startup files
-	// when the launch command is sent, swallowing it. Resend once after a
-	// second if the pane hasn't picked it up yet — harmless against sleep.
+	// respawn-pane execs the fake pi binary directly as the pane's process,
+	// replacing the shell instead of typing at it. SendKeys types into the
+	// pane's shell, and a freshly created shell can still be sourcing its
+	// startup files when the keys arrive, silently swallowing them — a real
+	// (if intermittent) race, not something to paper over with a resend.
+	// respawn-pane has no shell to race: pane_current_command is "pi" from
+	// the moment the pane exists.
+	if _, err := DefaultClient.Run("respawn-pane", "-k", "-t", paneID, piScript, "30"); err != nil {
+		t.Fatalf("respawn pane with fake pi binary: %v", err)
+	}
+
+	// respawn-pane returning does not guarantee tmux has re-read the pane's
+	// command yet, so this waits on the observable state rather than on a
+	// fixed sleep.
 	var pane Pane
-	start := time.Now()
-	deadline := start.Add(10 * time.Second)
-	resent := false
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		panes, err := GetPanes(session)
 		if err != nil || len(panes) != 1 {
@@ -3126,12 +3134,8 @@ func TestGetPanesRecoversPiTypeAfterTitleRewrite(t *testing.T) {
 		if pane.Command == "pi" {
 			break
 		}
-		if !resent && time.Since(start) > time.Second {
-			launch()
-			resent = true
-		}
 		if !time.Now().Before(deadline) {
-			t.Fatalf("pane_current_command = %q after 10s, want %q", pane.Command, "pi")
+			t.Fatalf("pane_current_command = %q after 5s, want %q", pane.Command, "pi")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
