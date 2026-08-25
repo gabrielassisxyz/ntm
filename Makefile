@@ -26,7 +26,7 @@ GOFLAGS := -trimpath
 # Output directory
 DIST := dist
 
-.PHONY: all build clean install test test-short test-all test-e2e lint fmt help pre-commit upgrade-contract
+.PHONY: all build clean install test test-short test-all test-e2e lint fmt help pre-commit upgrade-contract test-worktree-tool
 
 all: build
 
@@ -76,6 +76,14 @@ test-all:
 ## Run E2E tests only (requires agents)
 test-e2e:
 	$(GO) test -v -count=1 -tags=e2e ./e2e/... -timeout 10m
+
+# Deliberately not part of `test`/`test-all`: it mutates the live beads tracker on purpose,
+# to prove a worktree scripts/worktree.sh creates can see a status change made in the main
+# tree — that is the one thing the tool exists for, and there is no way to prove it without
+# actually creating and changing a bead.
+## Test scripts/worktree.sh (creates and closes a throwaway bead)
+test-worktree-tool:
+	bash scripts/test_worktree.sh
 
 ## Validate upgrade asset naming contract
 upgrade-contract:
@@ -155,6 +163,7 @@ help:
 	@echo "  test        Run tests (fast, skips E2E)"
 	@echo "  test-all    Run all tests including E2E"
 	@echo "  test-e2e    Run E2E tests only (requires agents)"
+	@echo "  test-worktree-tool  Test scripts/worktree.sh (creates and closes a throwaway bead)"
 	@echo "  lint        Run linter"
 	@echo "  fmt         Format code"
 	@echo "  clean       Remove build artifacts"
