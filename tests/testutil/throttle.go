@@ -147,7 +147,29 @@ func IsolateGitConfigProcess() (func() error, error) {
 // exports XDG_CONFIG_HOME. Call from TestMain before m.Run(); the returned
 // cleanup restores the previous values (an unset variable is restored to
 // unset, not empty) and removes the private root.
+//
+// NTM_TEST_TMUX_ENV_OWNED marks a helper process whose caller already
+// engineered its whole test environment, not just tmux: isolation is a no-op
+// here for the same reason it is in IsolateTmuxTestProcess. A cross-process
+// durability test spawns itself as a subprocess and passes down a HOME it
+// picked deliberately, expecting a second such subprocess to see the same
+// files; re-randomizing HOME on every process launch made that HOME
+// unreachable and the durable record it wrote unreadable, regardless of what
+// the parent configured.
+//
+// The flag alone is not trusted here either, and for a worse reason than in
+// IsolateTmuxTestProcess: an ambient NTM_TEST_TMUX_ENV_OWNED=1 left over from
+// an earlier command would disable HOME/XDG_CONFIG_HOME isolation for the
+// whole suite and point it at the developer's real ~/.config, and an
+// unscoped `go test ./...` writes there. TmuxTestEnvOwned confirms TMUX_TMPDIR
+// was actually produced by this package's own isolation before the flag is
+// honored; a caller relying on this escape hatch must already be running
+// under that isolation (which the CLI package's own TestMain provides).
 func IsolateUserConfigProcess() (func() error, error) {
+	if os.Getenv("NTM_TEST_TMUX_ENV_OWNED") == "1" && TmuxTestEnvOwned() {
+		return func() error { return nil }, nil
+	}
+
 	dir, err := os.MkdirTemp("", "ntm-test-config-")
 	if err != nil {
 		return nil, fmt.Errorf("create private config dir: %w", err)

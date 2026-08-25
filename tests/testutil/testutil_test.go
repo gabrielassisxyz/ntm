@@ -510,6 +510,92 @@ func TestIsolateUserConfigProcessRedirectsUserConfigDir(t *testing.T) {
 	}
 }
 
+// A test that spawns itself as a subprocess to check durability across a
+// process boundary must be able to hand that subprocess a HOME and expect it
+// to stick: re-randomizing it on every process launch makes anything written
+// under the caller's chosen HOME unreachable from the child that is supposed
+// to read it back, regardless of what the parent configured.
+func TestIsolateUserConfigProcessPreservesConfiguredEnvironment(t *testing.T) {
+	t.Setenv("NTM_TEST_TMUX_ENV_OWNED", "1")
+	// Must match tmuxenv.Pattern: NTM_TEST_TMUX_ENV_OWNED is only trusted
+	// when TMUX_TMPDIR proves it, not merely because it is set.
+	t.Setenv("TMUX_TMPDIR", ShortTmuxTempDir(t))
+	ownedHome := t.TempDir()
+	ownedXDG := filepath.Join(ownedHome, ".config")
+	t.Setenv("HOME", ownedHome)
+	t.Setenv("XDG_CONFIG_HOME", ownedXDG)
+
+	cleanup, err := IsolateUserConfigProcess()
+	if err != nil {
+		t.Fatalf("IsolateUserConfigProcess() error = %v", err)
+	}
+	if got := os.Getenv("HOME"); got != ownedHome {
+		t.Fatalf("HOME = %q, want caller-owned %q", got, ownedHome)
+	}
+	if got := os.Getenv("XDG_CONFIG_HOME"); got != ownedXDG {
+		t.Fatalf("XDG_CONFIG_HOME = %q, want caller-owned %q", got, ownedXDG)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup IsolateUserConfigProcess(): %v", err)
+	}
+	if got := os.Getenv("HOME"); got != ownedHome {
+		t.Fatalf("HOME = %q after no-op cleanup, want unchanged %q", got, ownedHome)
+	}
+	if got := os.Getenv("XDG_CONFIG_HOME"); got != ownedXDG {
+		t.Fatalf("XDG_CONFIG_HOME = %q after no-op cleanup, want unchanged %q", got, ownedXDG)
+	}
+}
+
+// TestIsolateUserConfigProcessIgnoresUnprovenOwnershipFlag is the regression
+// case for the same reason TestIsolateTmuxTestProcessIgnoresUnprovenOwnershipFlag
+// exists: an ambient NTM_TEST_TMUX_ENV_OWNED=1 left over from an earlier
+// command must not by itself disable HOME/XDG_CONFIG_HOME isolation. Before
+// requiring TmuxTestEnvOwned this combination short-circuited to a no-op and
+// pointed the whole suite at the developer's real ~/.config.
+func TestIsolateUserConfigProcessIgnoresUnprovenOwnershipFlag(t *testing.T) {
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	t.Setenv("NTM_TEST_TMUX_ENV_OWNED", "1")
+	t.Setenv("TMUX_TMPDIR", "") // unset: does not match tmuxenv.Pattern
+
+	cleanup, err := IsolateUserConfigProcess()
+	if err != nil {
+		t.Fatalf("IsolateUserConfigProcess() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup IsolateUserConfigProcess(): %v", err)
+		}
+	})
+	if got := os.Getenv("HOME"); got == "" || got == realHome {
+		t.Fatalf("HOME = %q, want isolation to run despite the unproven flag", got)
+	}
+	if got := os.Getenv("XDG_CONFIG_HOME"); got == "" || strings.HasPrefix(got, realHome) {
+		t.Fatalf("XDG_CONFIG_HOME = %q, want isolation to run despite the unproven flag", got)
+	}
+
+	// A TMUX_TMPDIR that is merely set, but to something tmuxenv.Pattern does
+	// not match, must be treated the same as unset.
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	t.Setenv("TMUX_TMPDIR", "/tmp/ambient-tmux-root")
+	cleanup, err = IsolateUserConfigProcess()
+	if err != nil {
+		t.Fatalf("IsolateUserConfigProcess() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup IsolateUserConfigProcess(): %v", err)
+		}
+	})
+	if got := os.Getenv("HOME"); got == "" || got == realHome {
+		t.Fatalf("HOME = %q, want isolation to run despite the unmatched TMUX_TMPDIR", got)
+	}
+}
+
 func TestIsolateUserConfigProcessRestoresPreviousValues(t *testing.T) {
 	ambientXDG, ambientXDGSet := os.LookupEnv("XDG_CONFIG_HOME")
 	ambientHome, ambientHomeSet := os.LookupEnv("HOME")
