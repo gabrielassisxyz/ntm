@@ -267,9 +267,9 @@ func TestRunReassignment_ToPane_Success(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1")
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
-	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
-	cfg.Agents.Gemini = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentReadyCatCommandTemplate
+	cfg.Agents.Codex = testAgentReadyCatCommandTemplate
+	cfg.Agents.Gemini = testAgentReadyCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -373,9 +373,9 @@ func TestRunRetryAssignments_PreservesPreviousFailReasonAndMetadata(t *testing.T
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1")
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
-	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
-	cfg.Agents.Gemini = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentReadyCatCommandTemplate
+	cfg.Agents.Codex = testAgentReadyCatCommandTemplate
+	cfg.Agents.Gemini = testAgentReadyCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)

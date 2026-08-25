@@ -12,6 +12,16 @@ import (
 const (
 	testAgentCatCommandTemplate    = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}/bin/cat`
 	testAgentBinCatCommandTemplate = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}/bin/cat`
+
+	// testAgentReadyCatCommandTemplate is testAgentCatCommandTemplate plus both
+	// agents' composer markers, for tests that dispatch a real prompt through the
+	// fixture and need ComposerReadyForDelivery to see the pane as ready rather
+	// than "initializing" (bd-sr2sg). Printing both markers keeps one template
+	// usable for either agent type. Do not swap this in for every consumer of
+	// testAgentCatCommandTemplate: a pane that always looks ready can no longer be
+	// made to look busy, which is what TestRunReassignment_TargetBusyWithoutForce
+	// asserts against.
+	testAgentReadyCatCommandTemplate = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}printf '❯\n›\n' && /bin/cat`
 )
 
 func newTmuxIntegrationTestConfig(projectsBase string) *config.Config {
