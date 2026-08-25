@@ -3103,12 +3103,20 @@ func TestGetPanesRecoversPiTypeAfterTitleRewrite(t *testing.T) {
 		t.Fatalf("write fake pi executable: %v", err)
 	}
 
-	if err := SendKeys(session, piScript+" 30", true); err != nil {
-		t.Fatalf("launch fake pi in pane: %v", err)
+	launch := func() {
+		if err := SendKeys(session, piScript+" 30", true); err != nil {
+			t.Fatalf("launch fake pi in pane: %v", err)
+		}
 	}
+	launch()
 
+	// A freshly created pane's shell may still be sourcing its startup files
+	// when the launch command is sent, swallowing it. Resend once after a
+	// second if the pane hasn't picked it up yet — harmless against sleep.
 	var pane Pane
-	deadline := time.Now().Add(5 * time.Second)
+	start := time.Now()
+	deadline := start.Add(10 * time.Second)
+	resent := false
 	for {
 		panes, err := GetPanes(session)
 		if err != nil || len(panes) != 1 {
@@ -3118,8 +3126,12 @@ func TestGetPanesRecoversPiTypeAfterTitleRewrite(t *testing.T) {
 		if pane.Command == "pi" {
 			break
 		}
+		if !resent && time.Since(start) > time.Second {
+			launch()
+			resent = true
+		}
 		if !time.Now().Before(deadline) {
-			t.Fatalf("pane_current_command = %q after 5s, want %q", pane.Command, "pi")
+			t.Fatalf("pane_current_command = %q after 10s, want %q", pane.Command, "pi")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
