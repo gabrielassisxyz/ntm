@@ -162,7 +162,20 @@ func IsolateGitConfigProcess() (func() error, error) {
 // exports XDG_CONFIG_HOME. Call from TestMain before m.Run(); the returned
 // cleanup restores the previous values (an unset variable is restored to
 // unset, not empty) and removes the private root.
+//
+// NTM_TEST_TMUX_ENV_OWNED marks a helper process whose caller already
+// engineered its whole test environment, not just tmux: isolation is a no-op
+// here for the same reason it is in IsolateTmuxTestProcess. A cross-process
+// durability test spawns itself as a subprocess and passes down a HOME it
+// picked deliberately, expecting a second such subprocess to see the same
+// files; re-randomizing HOME on every process launch made that HOME
+// unreachable and the durable record it wrote unreadable, regardless of what
+// the parent configured.
 func IsolateUserConfigProcess() (func() error, error) {
+	if os.Getenv("NTM_TEST_TMUX_ENV_OWNED") == "1" {
+		return func() error { return nil }, nil
+	}
+
 	dir, err := os.MkdirTemp("", "ntm-test-config-")
 	if err != nil {
 		return nil, fmt.Errorf("create private config dir: %w", err)
@@ -216,8 +229,10 @@ func removeAllWritable(dir string) error {
 
 // returns an idempotent cleanup function. TestMain callers must run cleanup
 // before os.Exit so the private server and its short socket root do not leak.
-// NTM_TEST_TMUX_ENV_OWNED marks a helper process whose caller owns its tmux
-// environment; isolation is a no-op so fake-binary contract tests stay intact.
+// NTM_TEST_TMUX_ENV_OWNED marks a helper process whose caller owns its whole
+// test environment, not just tmux (IsolateUserConfigProcess honors the same
+// marker below); isolation is a no-op so fake-binary contract tests stay
+// intact.
 func IsolateTmuxTestProcess() (func() error, error) {
 	if os.Getenv("NTM_TEST_TMUX_ENV_OWNED") == "1" {
 		return func() error { return nil }, nil
