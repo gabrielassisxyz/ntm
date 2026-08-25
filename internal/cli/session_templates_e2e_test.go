@@ -433,10 +433,15 @@ func captureStdout(t *testing.T, f func() error) (string, error) {
 }
 
 func configureSessionTemplateFakeAgents(testCfg *config.Config) {
+	// The interpreting shell must not be the pane's lasting foreground process:
+	// a `while read` loop never exits, so tmux reports it (a bareShellCommand)
+	// as the pane's live command forever and PANE_AGENT_DEAD refuses every
+	// delivery (bd-sr2sg). awk's own read loop takes over as the foreground
+	// process once the shell execs into it as its final command.
 	const modelPrefix = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}`
-	testCfg.Agents.Claude = modelPrefix + `/bin/sh -c 'stty -echo; printf "Claude Code v0.0.0\n\342\235\257 \n"; while IFS= read -r line; do printf "RECEIVED:%s\n\342\235\257 \n" "$line"; done'`
-	testCfg.Agents.Codex = modelPrefix + `/bin/sh -c 'stty -echo; printf "Codex CLI\ncodex>\n"; while IFS= read -r line; do printf "RECEIVED:%s\ncodex>\n" "$line"; done'`
-	testCfg.Agents.Gemini = modelPrefix + `/bin/sh -c 'stty -echo; printf "Gemini CLI\ngemini>\n"; while IFS= read -r line; do printf "RECEIVED:%s\ngemini>\n" "$line"; done'`
+	testCfg.Agents.Claude = modelPrefix + `stty -echo; awk 'BEGIN { printf "Claude Code v0.0.0\n❯ \n" } { printf "RECEIVED:%s\n❯ \n", $0 }'`
+	testCfg.Agents.Codex = modelPrefix + `stty -echo; awk 'BEGIN { printf "Codex CLI\n›\n" } { printf "RECEIVED:%s\n›\n", $0 }'`
+	testCfg.Agents.Gemini = modelPrefix + `stty -echo; awk 'BEGIN { printf "Gemini CLI\ngemini>\n" } { printf "RECEIVED:%s\ngemini>\n", $0 }'`
 }
 
 type templateCounts struct {
