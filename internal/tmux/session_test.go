@@ -3071,3 +3071,89 @@ func TestCircuitBreakerClosesAfterSuccessfulProbe(t *testing.T) {
 		}
 	}
 }
+
+// TestGetPanesRecoversPiTypeAfterTitleRewrite drives the parsePaneFromParts
+// fallback chain (bd-ffv3d) against a real tmux pane instead of a synthetic
+// fixture. pi rewrites its own pane title within seconds of starting, so by
+// the time GetPanes lists the pane the ntm-formatted title is gone; only
+// pane_current_command still says "pi". Every existing pi test up to this
+// one feeds a fixture straight to a function and never exercises a title
+// actually changing under a live tmux pane.
+func TestGetPanesRecoversPiTypeAfterTitleRewrite(t *testing.T) {
+	skipIfNoTmux(t)
+	session := createTestSession(t)
+
+	// A shebang script named "pi" reports its interpreter ("sh") as
+	// pane_current_command, not the script's own name — the kernel sets
+	// comm from the binary execve resolves to, and a script isn't one. A
+	// real ELF binary renamed to "pi" reports "pi", which is what a live
+	// pi process actually looks like to tmux, so the fixture is a copy of
+	// /usr/bin/sleep under that name rather than a script.
+	sleepBinary, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep binary not found: %v", err)
+	}
+	sleepBytes, err := os.ReadFile(sleepBinary)
+	if err != nil {
+		t.Fatalf("read sleep binary: %v", err)
+	}
+	binDir := t.TempDir()
+	piScript := filepath.Join(binDir, "pi")
+	if err := os.WriteFile(piScript, sleepBytes, 0o755); err != nil {
+		t.Fatalf("write fake pi executable: %v", err)
+	}
+
+	if err := SendKeys(session, piScript+" 30", true); err != nil {
+		t.Fatalf("launch fake pi in pane: %v", err)
+	}
+
+	var pane Pane
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		panes, err := GetPanes(session)
+		if err != nil || len(panes) != 1 {
+			t.Fatalf("panes = %d, err = %v; want one pane", len(panes), err)
+		}
+		pane = panes[0]
+		if pane.Command == "pi" {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("pane_current_command = %q after 5s, want %q", pane.Command, "pi")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// ntm titles the pane the way it does at spawn time...
+	spawnTitle := fmt.Sprintf("%s__pi_1_deepseek", session)
+	if _, err := DefaultClient.Run("select-pane", "-t", pane.ID, "-T", spawnTitle); err != nil {
+		t.Fatalf("set spawn-formatted title: %v", err)
+	}
+	panes, err := GetPanes(session)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("re-list panes after titling: %d, err = %v", len(panes), err)
+	}
+	if panes[0].Type != AgentPi {
+		t.Fatalf("Type = %v with spawn-formatted title, want AgentPi (sanity check before the rewrite)", panes[0].Type)
+	}
+
+	// ...and pi promptly destroys it, the way the production incident measured:
+	// a pane titled ntmtest__pi_1_deepseek reported "π - bd-ffv3d" 25 seconds
+	// after pi started, with pane_current_command still "pi".
+	if _, err := DefaultClient.Run("select-pane", "-t", pane.ID, "-T", "π - bd-ffv3d"); err != nil {
+		t.Fatalf("simulate pi's own title rewrite: %v", err)
+	}
+
+	panes, err = GetPanes(session)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("re-list panes after rewrite: %d, err = %v", len(panes), err)
+	}
+	pane = panes[0]
+	if pane.Title == spawnTitle {
+		t.Fatalf("title still %q, the rewrite did not take: test setup is not exercising the failure mode", pane.Title)
+	}
+	if pane.Type != AgentPi {
+		t.Fatalf("Type = %v after title rewrite (title=%q command=%q), want AgentPi via the command fallback",
+			pane.Type, pane.Title, pane.Command)
+	}
+}
