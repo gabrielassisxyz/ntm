@@ -4032,13 +4032,15 @@ func spawnPaneReadinessVerdict(agentType AgentType) string {
 }
 
 // formatSpawnReadinessVerdict renders the per-pane delivery-readiness verdict
-// line (bd-zz717). The no-classifier verdict names what the operator must do —
-// send the prompt by hand — because delivery was allowed unchecked.
+// line (bd-zz717). no-classifier means only that no composer-level check runs
+// at send time — waitForSpawnPaneReady's 30s state-based readiness poll (bd-3nv)
+// still gates every step regardless of this verdict, so the line must not
+// claim delivery went out unchecked.
 func formatSpawnReadinessVerdict(paneID string, agentType AgentType, verdict string) string {
 	canonical := agentpkg.AgentType(agentType).Canonical()
 	switch verdict {
 	case string(tmux.VerdictNoClassifier):
-		return fmt.Sprintf("⚠ pane %s (%s): no-classifier — no composer classifier for this agent type; send the prompt by hand", paneID, canonical)
+		return fmt.Sprintf("⚠ pane %s (%s): no-classifier — no composer classifier for this agent type; the readiness poll still gates delivery, but the composer itself is not double-checked at send time", paneID, canonical)
 	case spawnVerdictDeliveryNotImplemented:
 		return fmt.Sprintf("⚠ pane %s (%s): delivery-not-implemented — automated prompt delivery is not implemented for this agent type", paneID, canonical)
 	default:

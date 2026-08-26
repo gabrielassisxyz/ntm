@@ -691,8 +691,9 @@ func TestSpawnPromptWorkerCleanupBlocksUntilWorkerExit(t *testing.T) {
 
 // bd-zz717: the per-pane readiness verdict is rendered as one line per pane,
 // naming the pane, the canonical agent type, and the verdict. The
-// no-classifier verdict names what the operator must do — send the prompt by
-// hand.
+// no-classifier verdict (bd-3nv) says only that no composer-level check runs
+// at send time — it must not claim delivery went out unchecked, since the
+// state-based readiness poll gates every step regardless of this verdict.
 func TestFormatSpawnReadinessVerdict(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -707,10 +708,10 @@ func TestFormatSpawnReadinessVerdict(t *testing.T) {
 			want:      "✓ pane %1 (cc): checked-and-ready",
 		},
 		{
-			name:      "no-classifier names manual send",
+			name:      "no-classifier says the readiness poll still gates delivery",
 			agentType: AgentTypeGemini,
 			verdict:   string(tmux.VerdictNoClassifier),
-			want:      "⚠ pane %1 (gmi): no-classifier — no composer classifier for this agent type; send the prompt by hand",
+			want:      "⚠ pane %1 (gmi): no-classifier — no composer classifier for this agent type; the readiness poll still gates delivery, but the composer itself is not double-checked at send time",
 		},
 		{
 			name:      "delivery-not-implemented",
@@ -758,6 +759,14 @@ func TestSpawnPaneReadinessVerdict(t *testing.T) {
 			name:      "antigravity no-classifier",
 			agentType: AgentTypeAntigravity,
 			want:      string(tmux.VerdictNoClassifier),
+		},
+		{
+			// bd-3nv: pi has a real composer classifier now (predicate-based,
+			// not marker-based), so it must report checked-and-ready like
+			// claude/codex rather than no-classifier.
+			name:      "pi checked-and-ready",
+			agentType: AgentType("pi"),
+			want:      string(tmux.VerdictCheckedAndReady),
 		},
 	}
 	for _, tt := range tests {
@@ -1156,5 +1165,31 @@ func TestSendInitPromptDeliversToPiPanes(t *testing.T) {
 	}
 	if dispatcher.panes[0] != "%1" {
 		t.Fatalf("dispatched pane = %q, want %%1", dispatcher.panes[0])
+	}
+}
+
+// TestDispatchSpawnPromptSequenceDeliversRecoveryContextToPi is the gap named
+// in bd-3nv's Tests section: TestDispatchSpawnPromptSequenceReadinessTimeout
+// covers only AgentClaude timing out, and no test drove the sequence loop
+// with Kind "recovery_context" — the exact step bd-3nv's reproduction (a
+// mixed pi+cc swarm spawned with --no-cass-context) failed on — for a
+// non-cc/cod agent type. A pi pane sitting at its idle status-line chrome
+// must pass the recovery_context readiness gate and receive the step,
+// exactly like the cc pane in TestDispatchSpawnPromptSequencePreservesOrderAndCanonicalReceipts.
+func TestDispatchSpawnPromptSequenceDeliversRecoveryContextToPi(t *testing.T) {
+	observedAt := time.Now().UTC()
+	observer := newPiSessionObserver(observedAt, piIdleAtStatusLineCapture)
+	dispatcher := &recordingSpawnDispatcher{}
+
+	receipts, err := dispatchSpawnPromptSequence(
+		t.Context(), "demo", "%1",
+		[]spawnPromptStep{{Kind: "recovery_context", Message: "recovery context for a resumed session"}},
+		observer, dispatcher, 5*time.Second, time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("dispatchSpawnPromptSequence() error = %v, want the pi pane to pass the recovery_context readiness gate", err)
+	}
+	if len(receipts) != 1 || len(dispatcher.messages) != 1 || dispatcher.messages[0] != "recovery context for a resumed session" {
+		t.Fatalf("receipts=%d messages=%v, want the recovery_context step delivered to the pi pane", len(receipts), dispatcher.messages)
 	}
 }
