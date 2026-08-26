@@ -1746,11 +1746,12 @@ Shell Integration:
 				return
 			}
 			opts := robot.IsWorkingOptions{
-				Session:       session,
-				PaneSelectors: paneSelectors,
-				LinesCaptured: robotIsWorkingLines(cmd),
-				Verbose:       robotIsWorkingVerbose,
-				Semantic:      robotSemantic,
+				Session:          session,
+				PaneSelectors:    paneSelectors,
+				LinesCaptured:    robotIsWorkingLines(cmd),
+				Verbose:          robotIsWorkingVerbose,
+				Semantic:         robotSemantic,
+				IncludeSessionID: robotIncludeSessionID,
 			}
 			if robotSemantic {
 				win, werr := resolveSemanticWindow(robotSemanticWindow)
@@ -3998,6 +3999,11 @@ var (
 	robotSemantic       bool   // enable the semantic_progress field
 	robotSemanticWindow string // look-back window (duration, e.g. "30m"); empty = config/default
 
+	// Agent CLI session id flag (bd-4gw). Opt-in, same reasoning as
+	// robotSemantic: discovery can shell out to casr and walk session
+	// directories, so the default --robot-is-working poll stays free of it.
+	robotIncludeSessionID bool // enable the agent_session_id field
+
 	// Robot-agent-health flags for comprehensive health check (bd-2pwzf)
 	robotAgentHealth        string // session name to check
 	robotAgentHealthNoCaut  bool   // skip caut provider query
@@ -4164,6 +4170,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotIsWorkingVerbose, "is-working-verbose", false, "Include raw sample output in --robot-is-working response. Example: --is-working-verbose")
 	rootCmd.Flags().BoolVar(&robotSemantic, "semantic", false, "Add an optional ground-truth semantic_progress field to --robot-is-working (token-attributed git commits / bead claims). Advisory only; never flips is_working. Off by default (no git/br calls). Example: ntm --robot-is-working=myproject --semantic")
 	rootCmd.Flags().StringVar(&robotSemanticWindow, "semantic-window", "", "Look-back window for --semantic (Go duration, e.g. 30m, 2h). Defaults to [robot.semantic].window_minutes or 30m. Example: --semantic --semantic-window=1h")
+	rootCmd.Flags().BoolVar(&robotIncludeSessionID, "session-id", false, "Add an optional agent_session_id field to --robot-is-working, joining each pane to its agent CLI transcript. Off by default (no casr/filesystem calls). Example: ntm --robot-is-working=myproject --session-id")
 	rootCmd.Flags().StringVar(&robotAgentHealth, "robot-agent-health", "", "Comprehensive agent health check combining local state and provider usage. Required: SESSION. Example: ntm --robot-agent-health=myproject --panes=2,3")
 	rootCmd.Flags().BoolVar(&robotAgentHealthNoCaut, "no-caut", false, "Skip caut provider query for faster local-only health check. Optional with --robot-agent-health")
 	rootCmd.Flags().BoolVar(&robotAgentHealthVerbose, "agent-health-verbose", false, "Include raw sample output in --robot-agent-health response. Example: --agent-health-verbose")

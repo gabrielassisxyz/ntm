@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -46,6 +47,14 @@ type IsWorkingOptions struct {
 	// back to the conservative default (defaultSemanticWindow). Only consulted
 	// when Semantic is true.
 	SemanticWindow time.Duration
+
+	// IncludeSessionID, when true, attaches AgentSessionID to each pane by
+	// resolving that pane's agent CLI session (bd-4gw): the join a token-spend
+	// consumer needs from a claimed bead to the transcript that recorded it.
+	// OFF by default, matching Semantic above — discovery can shell out to
+	// casr and walk provider session directories, and the default poll path
+	// must stay free of that cost.
+	IncludeSessionID bool
 }
 
 // DefaultIsWorkingOptions returns sensible defaults.
@@ -122,6 +131,13 @@ type PaneWorkStatus struct {
 	// present only under --semantic and omitted entirely otherwise. It is
 	// advisory: it never changes IsWorking/IsIdle/Recommendation above.
 	SemanticProgress *SemanticProgress `json:"semantic_progress,omitempty"`
+
+	// AgentSessionID is this pane's agent CLI session id (the Claude Code /
+	// Codex / Gemini / Antigravity transcript identifier), present only under
+	// --session-id (bd-4gw). It is the middle edge of bead -> pane ->
+	// transcript: absent rather than guessed when no session file can be
+	// found, because a field that points at nothing is worse than no field.
+	AgentSessionID string `json:"agent_session_id,omitempty"`
 }
 
 // IsWorkingSummary provides aggregate statistics across all panes.
@@ -394,6 +410,14 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 	// Create parser
 	parser := agent.NewParser()
 
+	// One discoverer shared across every pane in this call (bd-4gw): its
+	// internal fallback/CASR caches avoid repeating an external casr scan or
+	// a workspace directory walk once per pane in the same session.
+	var sessionDiscoverer *agentsession.Discoverer
+	if opts.IncludeSessionID {
+		sessionDiscoverer = agentsession.NewDiscoverer()
+	}
+
 	// Echo canonical resolved targets. Window-local pane indices are not
 	// unique identities in multi-window sessions.
 	requestedTargets := make([]string, 0, len(selected))
@@ -555,6 +579,17 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			repoDir := paneCurrentPathForTarget(ctx, sel.target)
 			addr := PaneAddr{Session: opts.Session, Window: sel.WindowIndex, Pane: sel.Index}
 			status.SemanticProgress = PaneSemanticProgress(addr, repoDir, opts.SemanticWindow, status.IsWorking, time.Now())
+		}
+
+		// OPTIONAL agent CLI session id (bd-4gw), computed ONLY under
+		// --session-id. Best-effort: a pane whose session cannot be located
+		// (no matching process, no session file) simply leaves the field
+		// absent rather than reporting a guessed or stale id.
+		if opts.IncludeSessionID && sessionDiscoverer != nil {
+			repoDir := paneCurrentPathForTarget(ctx, sel.target)
+			if info := sessionDiscoverer.DiscoverContext(ctx, status.AgentType, repoDir, paneObservation.Metadata.PID); info != nil {
+				status.AgentSessionID = info.SessionID
+			}
 		}
 
 		output.Panes[paneKey] = status
