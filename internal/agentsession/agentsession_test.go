@@ -3,6 +3,7 @@ package agentsession
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -57,6 +58,8 @@ func TestResumeProvider(t *testing.T) {
 		"antigravity":     "antigravity",
 		"antigravity-cli": "antigravity",
 		"AGY":             "antigravity",
+		"pi":              "pi",
+		"PI":              "pi",
 		"user":            "",
 		"cursor":          "",
 		"":                "",
@@ -122,6 +125,8 @@ func TestResumeCommandNative(t *testing.T) {
 		{"gemini", "g9", true, "gemini --resume 'g9'"},
 		{"antigravity", "uuid-9", false, "agy --conversation 'uuid-9' --model 'Gemini 3.1 Pro (High)'"},
 		{"antigravity", "uuid-9", true, "agy --conversation 'uuid-9' --model 'Gemini 3.1 Pro (High)'"},
+		{"pi", "pi-id-1", false, "pi --session 'pi-id-1'"},
+		{"pi", "pi-id-1", true, "pi --session 'pi-id-1'"},
 		{"claude", "", true, ""},
 		{"unknown", "x", true, ""},
 	}
@@ -154,6 +159,8 @@ func TestResumeCommandCASR(t *testing.T) {
 		// Antigravity has no casr short-flag; even with preferCASR=true and
 		// casr available it must fall through to its native agy command.
 		{"antigravity", "uuid-9", "agy --conversation 'uuid-9' --model 'Gemini 3.1 Pro (High)'"},
+		// pi likewise has no casr short-flag; it falls through to native.
+		{"pi", "pi-id-1", "pi --session 'pi-id-1'"},
 	}
 	for _, c := range cases {
 		if got := ResumeCommand(c.provider, c.id, true); got != c.want {
@@ -171,6 +178,7 @@ func TestResumeLatestCommand(t *testing.T) {
 	cases := map[string]string{
 		"antigravity": "agy --continue --model 'Gemini 3.1 Pro (High)'",
 		"agy":         "", // ResumeLatestCommand takes a provider name, not an agent type alias
+		"pi":          "pi --continue",
 		"gemini":      "", // no id-less native resume for the Gemini CLI
 		"claude":      "",
 		"codex":       "",
@@ -462,6 +470,151 @@ func TestDiscoverClaudeNoSession(t *testing.T) {
 	home := t.TempDir()
 	if info := nativeDiscoverer(home).Discover("cc", "/no/such/project", 0); info != nil {
 		t.Errorf("expected nil for missing project, got %+v", info)
+	}
+}
+
+func TestEncodePiProjectDir(t *testing.T) {
+	// pi encodes a cwd as "--" + cwd-with-/-replaced-by-"-" + "--". Unlike
+	// Claude Code, only the path separator is rewritten: '.', '_' and other
+	// characters survive verbatim. Expectations are verified against the real
+	// ~/.pi/agent/sessions directories (e.g. /home/gabriel/repositories/
+	// agent-usage-book -> --home-gabriel-repositories-agent-usage-book--).
+	cases := map[string]string{
+		"/home/gabriel/repositories/agent-usage-book": "--home-gabriel-repositories-agent-usage-book--",
+		"/data/projects/ntm":                          "--data-projects-ntm--",
+		"/home/u/my.app":                              "--home-u-my.app--",
+		"/a/b_c":                                      "--a-b_c--",
+		"/data/projects/ntm/":                         "--data-projects-ntm--", // trailing slash cleaned
+	}
+	for in, want := range cases {
+		if got := PiProjectDir(in); got != want {
+			t.Errorf("PiProjectDir(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// Explicit regression guard: pi preserves '.' and '_' (only '/' is
+	// rewritten), so a Claude-style all-nonalnum collapse would look in a
+	// non-existent directory and report no session.
+	if got := PiProjectDir("/home/u/my.app"); strings.Contains(got, "my-app") {
+		t.Errorf("PiProjectDir must preserve '.': got %q", got)
+	}
+	if got := PiProjectDir("/a/b_c"); strings.Contains(got, "b-c") {
+		t.Errorf("PiProjectDir must preserve '_': got %q", got)
+	}
+}
+
+func TestDiscoverPi(t *testing.T) {
+	home := t.TempDir()
+	workDir := "/data/projects/pidemo"
+	sessionsDir := filepath.Join(home, ".pi", "agent", "sessions", PiProjectDir(workDir))
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two session files; the one with the later header timestamp should win
+	// when no process start time is available.
+	older := filepath.Join(sessionsDir, "2026-08-26T02-46-53-012Z_older-session.jsonl")
+	newer := filepath.Join(sessionsDir, "2026-08-26T02-46-53-174Z_newer-session.jsonl")
+	olderHeader := `{"type":"session","version":3,"id":"older-session","timestamp":"2026-08-26T02:46:53.012Z","cwd":"` + workDir + `"}` + "\n"
+	newerHeader := `{"type":"session","version":3,"id":"newer-session","timestamp":"2026-08-26T02:46:53.174Z","cwd":"` + workDir + `"}` + "\n"
+	if err := os.WriteFile(older, []byte(olderHeader), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newer, []byte(newerHeader), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info := nativeDiscoverer(home).Discover("pi", workDir, 0)
+	if info == nil {
+		t.Fatal("expected to discover a pi session, got nil")
+	}
+	if info.SessionID != "newer-session" {
+		t.Errorf("SessionID = %q, want newer-session", info.SessionID)
+	}
+	if info.Provider != "pi" {
+		t.Errorf("Provider = %q, want pi", info.Provider)
+	}
+	if info.AgentType != "pi" {
+		t.Errorf("AgentType = %q, want pi", info.AgentType)
+	}
+	if info.SourcePath != newer {
+		t.Errorf("SourcePath = %q, want %q", info.SourcePath, newer)
+	}
+}
+
+func TestDiscoverPiRejectsMismatchedCwd(t *testing.T) {
+	home := t.TempDir()
+	workDir := "/data/projects/pidemo"
+	sessionsDir := filepath.Join(home, ".pi", "agent", "sessions", PiProjectDir(workDir))
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A session file whose header cwd names a different project must not
+	// answer for this one, even though it sits in the same encoded directory
+	// (pi's encoding can collide: /a/b and /a-b both encode to --a-b--).
+	stale := filepath.Join(sessionsDir, "2026-08-26T02-46-53-012Z_stale-session.jsonl")
+	staleHeader := `{"type":"session","version":3,"id":"stale-session","timestamp":"2026-08-26T02:46:53.012Z","cwd":"/some/other/project"}` + "\n"
+	if err := os.WriteFile(stale, []byte(staleHeader), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if info := nativeDiscoverer(home).Discover("pi", workDir, 0); info != nil {
+		t.Errorf("expected nil for mismatched cwd, got %+v", info)
+	}
+}
+
+func TestDiscoverPiOrderedAssignment(t *testing.T) {
+	home := t.TempDir()
+	workDir := "/data/projects/pidemo"
+	sessionsDir := filepath.Join(home, ".pi", "agent", "sessions", PiProjectDir(workDir))
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduce the measured live shape: six panes start 120ms apart while
+	// their headers are written 552-781ms later. The lag exceeds the spacing
+	// by ~5x, so nearest-header-by-time collides on the first header for five
+	// of six panes; ordered assignment (the i-th process takes the i-th
+	// unclaimed header after it) is exact.
+	base := time.Date(2026, 8, 26, 2, 46, 52, 460_000_000, time.UTC)
+	lags := []time.Duration{552, 594, 630, 753, 762, 781}
+	var wantIDs []string
+	for i := 0; i < 6; i++ {
+		start := base.Add(time.Duration(i) * 120 * time.Millisecond)
+		headerTime := start.Add(lags[i] * time.Millisecond)
+		id := fmt.Sprintf("pi-session-%d", i)
+		wantIDs = append(wantIDs, id)
+		filename := headerTime.Format("2006-01-02T15-04-05-000Z") + "_" + id + ".jsonl"
+		header := fmt.Sprintf(`{"type":"session","version":3,"id":"%s","timestamp":"%s","cwd":"%s"}`+"\n",
+			id, headerTime.Format(time.RFC3339Nano), workDir)
+		if err := os.WriteFile(filepath.Join(sessionsDir, filename), []byte(header), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	discoverer := nativeDiscoverer(home)
+	discoverer.findProcessStart = func(pid int, _ string) int64 {
+		idx := pid - 100
+		if idx < 0 || idx >= 6 {
+			return 0
+		}
+		return base.Add(time.Duration(idx) * 120 * time.Millisecond).UnixMilli()
+	}
+
+	seen := make(map[string]bool)
+	for i := 0; i < 6; i++ {
+		pid := 100 + i
+		info := discoverer.Discover("pi", workDir, pid)
+		if info == nil {
+			t.Fatalf("pane %d: no session discovered", pid)
+		}
+		if info.SessionID != wantIDs[i] {
+			t.Errorf("pane %d: SessionID = %q, want %q", pid, info.SessionID, wantIDs[i])
+		}
+		if seen[info.SessionID] {
+			t.Errorf("pane %d: duplicate session id %q", pid, info.SessionID)
+		}
+		seen[info.SessionID] = true
 	}
 }
 

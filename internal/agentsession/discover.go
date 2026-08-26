@@ -72,7 +72,7 @@ const (
 
 // Info describes a discovered agent CLI session for a pane.
 type Info struct {
-	// AgentType is the canonical ntm agent type ("cc", "cod", "gmi", "agy").
+	// AgentType is the canonical ntm agent type ("cc", "cod", "gmi", "agy", "pi").
 	AgentType string `json:"agent_type"`
 	// SessionID is the provider session id (e.g. the Claude Code UUID).
 	SessionID string `json:"session_id"`
@@ -127,6 +127,8 @@ func ResumeProvider(agentType string) string {
 		return "gemini"
 	case "agy", "antigravity", "antigravity-cli":
 		return "antigravity"
+	case "pi":
+		return "pi"
 	default:
 		return ""
 	}
@@ -290,6 +292,8 @@ func (d *Discoverer) DiscoverContext(ctx context.Context, agentType, workDir str
 		info = discoverGeminiContext(ctx, home, cleanWorkDir, processStartedAt, d.claimedSessions)
 	case "antigravity":
 		info = discoverAntigravityContext(ctx, home, cleanWorkDir)
+	case "pi":
+		info = discoverPiContext(ctx, home, cleanWorkDir, processStartedAt, d.claimedSessions)
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -509,6 +513,8 @@ func canonicalAgentType(agentType, provider string) string {
 		return "gmi"
 	case "antigravity":
 		return "agy"
+	case "pi":
+		return "pi"
 	default:
 		return strings.ToLower(strings.TrimSpace(agentType))
 	}
@@ -532,6 +538,8 @@ func providerCommandMarkers(provider string) []string {
 		return []string{provider}
 	case "antigravity":
 		return []string{"agy", "antigravity"}
+	case "pi":
+		return []string{"pi"}
 	default:
 		return nil
 	}
@@ -982,6 +990,160 @@ func discoverAntigravityContext(ctx context.Context, home, workDir string) *Info
 		SourcePath: path,
 		UpdatedAt:  mod,
 	}
+}
+
+// PiProjectDir reproduces pi's session-directory encoding: the absolute cwd
+// with the leading '/' dropped and every remaining '/' replaced by '-', the
+// whole wrapped in "--", e.g.
+//
+//	/home/gabriel/repositories/agent-usage-book -> --home-gabriel-repositories-agent-usage-book--
+//
+// Unlike Claude Code (which collapses ALL non-alphanumerics), pi rewrites only
+// the path separator, so '.', '_' and other characters survive verbatim. This
+// must match pi's own encoder exactly; a mismatch looks in a non-existent
+// directory and reports no session.
+func PiProjectDir(workDir string) string {
+	cleaned := filepath.Clean(workDir)
+	// pi drops the leading '/' before rewriting the remaining separators, so
+	// /home/gabriel -> --home-gabriel-- (not ---home-gabriel--).
+	return "--" + strings.ReplaceAll(strings.TrimPrefix(cleaned, "/"), "/", "-") + "--"
+}
+
+// discoverPiContext locates the pi session for a working directory under
+// ~/.pi/agent/sessions/<encoded-cwd>/. pi appends to its session file and
+// closes it between writes, so the open-fd scan that disambiguates other
+// providers finds nothing; the header's own timestamp is the signal instead.
+func discoverPiContext(ctx context.Context, home, workDir string, processStartedAt int64, claimed map[string]bool) *Info {
+	if ctx.Err() != nil {
+		return nil
+	}
+	root := filepath.Join(home, ".pi", "agent", "sessions", PiProjectDir(workDir))
+	path, mod := newestPiSessionForCwdContext(ctx, root, filepath.Clean(workDir), processStartedAt, claimed)
+	if path == "" {
+		return nil
+	}
+	id := piSessionID(path)
+	if id == "" {
+		return nil
+	}
+	return &Info{
+		AgentType:  "pi",
+		SessionID:  id,
+		Provider:   "pi",
+		SourcePath: path,
+		UpdatedAt:  mod,
+	}
+}
+
+// piSessionHeader is the first record of a pi session file. Its keys are type,
+// version, id, timestamp and cwd, so the session id is readable from the file
+// itself and the cwd is verifiable without any external registry.
+type piSessionHeader struct {
+	Type      string `json:"type"`
+	Version   int    `json:"version"`
+	ID        string `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Cwd       string `json:"cwd"`
+}
+
+func readPiSessionHeader(path string) (piSessionHeader, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return piSessionHeader{}, false
+	}
+	defer file.Close()
+	var header piSessionHeader
+	if err := json.NewDecoder(file).Decode(&header); err != nil || header.Type != "session" {
+		return piSessionHeader{}, false
+	}
+	return header, true
+}
+
+func piSessionID(path string) string {
+	if header, ok := readPiSessionHeader(path); ok && strings.TrimSpace(header.ID) != "" {
+		return strings.TrimSpace(header.ID)
+	}
+	return ""
+}
+
+func piHeaderStartedAtMillis(header piSessionHeader) int64 {
+	if strings.TrimSpace(header.Timestamp) == "" {
+		return 0
+	}
+	startedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(header.Timestamp))
+	if err != nil {
+		return 0
+	}
+	return startedAt.UnixMilli()
+}
+
+// newestPiSessionForCwdContext returns the pi session a pane should own. pi
+// panes in one directory start within ~120ms of each other while their headers
+// are written 550-780ms later, so nearest-header-by-time collides on the first
+// header for all but one pane. Ordered assignment is exact instead: the i-th
+// process by start time takes the i-th unclaimed header written after it.
+func newestPiSessionForCwdContext(ctx context.Context, root, workDir string, processStartedAt int64, claimed map[string]bool) (string, time.Time) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return "", time.Time{}
+	}
+	type piCandidate struct {
+		path      string
+		mod       time.Time
+		startedAt int64
+	}
+	var candidates []piCandidate
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return "", time.Time{}
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		header, ok := readPiSessionHeader(path)
+		if !ok {
+			continue
+		}
+		id := strings.TrimSpace(header.ID)
+		if id == "" {
+			continue
+		}
+		if header.Cwd == "" || !pathWithin(workDir, header.Cwd) {
+			continue
+		}
+		if claimed[sessionClaimKey("pi", id)] {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, piCandidate{
+			path:      path,
+			mod:       info.ModTime(),
+			startedAt: piHeaderStartedAtMillis(header),
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].startedAt < candidates[j].startedAt
+	})
+	if processStartedAt > 0 {
+		for _, candidate := range candidates {
+			if candidate.startedAt > 0 && candidate.startedAt < processStartedAt {
+				continue
+			}
+			return candidate.path, candidate.mod
+		}
+		return "", time.Time{}
+	}
+	// No process start time: the newest session (latest header timestamp) wins,
+	// matching the newest-wins convention of the other native stores.
+	if len(candidates) > 0 {
+		newest := candidates[len(candidates)-1]
+		return newest.path, newest.mod
+	}
+	return "", time.Time{}
 }
 
 // newestFileWithExt returns the path and modtime of the most-recently-modified
