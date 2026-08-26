@@ -1,0 +1,12 @@
+
+
+ In exactly three short paragraphs, explain what a tmux pane title is used for.
+
+
+ ⠹ Working...
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+~/repositories/ntm (main)
+↑3.1M ↓7.9k 42.8%/262k (auto)                                (litellm) kimi-k2.7
