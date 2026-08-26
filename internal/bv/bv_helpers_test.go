@@ -602,6 +602,39 @@ exit 1
 	}
 }
 
+func TestGetReadyIDsContextParsesReadyList(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".beads"), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+echo '[{"id":"bd-a","title":"A"},{"id":"bd-b","title":"B"},{"id":"  ","title":"blank"}]'
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	ids, err := GetReadyIDsContext(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("GetReadyIDsContext: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("ids=%v, want 2 (blank id dropped)", ids)
+	}
+	if ids[0] != "bd-a" || ids[1] != "bd-b" {
+		t.Fatalf("ids=%v, want [bd-a bd-b]", ids)
+	}
+}
+
+func TestGetReadyIDsContextRequiresContext(t *testing.T) {
+	if _, err := GetReadyIDsContext(nil, "/tmp"); err == nil {
+		t.Fatal("GetReadyIDsContext(nil) = nil error, want context required")
+	}
+}
+
 func TestGetPlanContextRequiresPlanTracksEnvelope(t *testing.T) {
 	tests := []struct {
 		name       string

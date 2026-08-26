@@ -442,34 +442,34 @@ func TestCollectQueueDryReservationsServerUnavailableHealthFails(t *testing.T) {
 	}
 }
 
-func TestQueueDryTriageTimeoutIsInteractive(t *testing.T) {
-	if queueDryTriageTimeout <= 0 {
-		t.Fatalf("queueDryTriageTimeout = %s, must be positive", queueDryTriageTimeout)
-	}
-	if queueDryTriageTimeout >= 5*time.Second {
-		t.Fatalf("queueDryTriageTimeout = %s, must be < 5s for an interactive diagnostic", queueDryTriageTimeout)
-	}
-}
-
-func TestCollectQueueDryReportWarnsWhenTriageUnavailable(t *testing.T) {
-	oldGetTriage := queueDryGetTriage
-	queueDryGetTriage = func(string) (*bv.TriageResponse, error) {
-		return nil, errors.New("bv timed out after 2s")
+func TestCollectQueueDryReportUnavailableWhenReadySetFails(t *testing.T) {
+	oldGetReadyIDs := queueDryGetReadyIDs
+	queueDryGetReadyIDs = func(context.Context, string) ([]string, error) {
+		return nil, errors.New("br ready failed: no .beads/ directory")
 	}
 	t.Cleanup(func() {
-		queueDryGetTriage = oldGetTriage
+		queueDryGetReadyIDs = oldGetReadyIDs
 	})
 
 	report := collectQueueDryReport(t.TempDir(), time.Now().UTC(), 24*time.Hour, 0, 10*time.Minute, 1)
 
-	if report.Evidence.TriageError != "bv timed out after 2s" {
-		t.Fatalf("TriageError=%q, want timeout text", report.Evidence.TriageError)
+	if report.Success {
+		t.Fatalf("Success=true, want false when the ready set cannot be walked")
 	}
-	if !containsWarning(report.Warnings, "bv triage unavailable: bv timed out after 2s") {
-		t.Fatalf("warnings=%v, want triage timeout warning", report.Warnings)
+	if report.Evidence.ReadyCount != 0 || report.Evidence.ActionableCount != 0 {
+		t.Fatalf("ready/actionable=%d/%d, want 0/0 when the ready set is unavailable", report.Evidence.ReadyCount, report.Evidence.ActionableCount)
 	}
 	if report.Evidence.CountsVerified {
-		t.Fatalf("CountsVerified=true, want false when both Beads summary and bv triage are unavailable")
+		t.Fatalf("CountsVerified=true, want false when the ready set cannot be walked")
+	}
+	if !strings.Contains(report.Evidence.BeadsSummaryReason, "ready set unavailable") {
+		t.Fatalf("BeadsSummaryReason=%q, want ready-set-unavailable marker", report.Evidence.BeadsSummaryReason)
+	}
+	if len(report.Errors) == 0 {
+		t.Fatalf("Errors=%v, want the unavailable reason surfaced", report.Errors)
+	}
+	if len(report.Evidence.TriageTopIDs) != 0 {
+		t.Fatalf("TriageTopIDs=%v, want empty when readiness is unavailable", report.Evidence.TriageTopIDs)
 	}
 	if report.QueueDry {
 		t.Fatalf("QueueDry=true, want false when tracker counts are unavailable")
@@ -488,6 +488,220 @@ func TestCollectQueueDryReportWarnsWhenTriageUnavailable(t *testing.T) {
 	}
 	if !containsQueueDryRecommendation(report.Recommendations, "refresh_triage") {
 		t.Fatalf("recommendations=%v, want refresh_triage when tracker counts are unavailable", report.Recommendations)
+	}
+}
+
+func TestCollectQueueDryReportReadySetDerivation(t *testing.T) {
+	oldGetReadyIDs := queueDryGetReadyIDs
+	t.Cleanup(func() {
+		queueDryGetReadyIDs = oldGetReadyIDs
+	})
+
+	cases := []struct {
+		name      string
+		readyIDs  []string
+		wantCount int
+		wantTop   []string
+		wantDry   bool
+	}{
+		{
+			name:      "empty ready set is dry",
+			readyIDs:  []string{},
+			wantCount: 0,
+			wantTop:   nil,
+			wantDry:   true,
+		},
+		{
+			name:      "two ready beads are both offered",
+			readyIDs:  []string{"bd-a", "bd-b"},
+			wantCount: 2,
+			wantTop:   []string{"bd-a", "bd-b"},
+			wantDry:   false,
+		},
+		{
+			name:      "four ready beads truncate top ids to three",
+			readyIDs:  []string{"bd-a", "bd-b", "bd-c", "bd-d"},
+			wantCount: 4,
+			wantTop:   []string{"bd-a", "bd-b", "bd-c"},
+			wantDry:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			queueDryGetReadyIDs = func(context.Context, string) ([]string, error) {
+				return append([]string(nil), tc.readyIDs...), nil
+			}
+
+			report := collectQueueDryReport(t.TempDir(), time.Now().UTC(), 24*time.Hour, 0, 10*time.Minute, 1)
+
+			if !report.Evidence.CountsVerified {
+				t.Fatalf("CountsVerified=false, evidence=%+v errors=%v", report.Evidence, report.Errors)
+			}
+			if report.Evidence.ReadyCount != tc.wantCount {
+				t.Fatalf("ReadyCount=%d, want %d", report.Evidence.ReadyCount, tc.wantCount)
+			}
+			if report.Evidence.ActionableCount != tc.wantCount {
+				t.Fatalf("ActionableCount=%d, want %d", report.Evidence.ActionableCount, tc.wantCount)
+			}
+			if report.QueueDry != tc.wantDry {
+				t.Fatalf("QueueDry=%t, want %t", report.QueueDry, tc.wantDry)
+			}
+			if len(report.Evidence.TriageTopIDs) != len(tc.wantTop) {
+				t.Fatalf("TriageTopIDs=%v, want %v", report.Evidence.TriageTopIDs, tc.wantTop)
+			}
+			for i := range tc.wantTop {
+				if report.Evidence.TriageTopIDs[i] != tc.wantTop[i] {
+					t.Fatalf("TriageTopIDs=%v, want %v", report.Evidence.TriageTopIDs, tc.wantTop)
+				}
+			}
+		})
+	}
+}
+
+func TestCollectQueueDryReportMatchesBrReady(t *testing.T) {
+	requireQueueDryGateCommand(t, "br")
+	requireQueueDryGateCommand(t, "git")
+
+	projectDir := t.TempDir()
+	failurePath := filepath.Join(projectDir, "failure.txt")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "init")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "config", "user.email", "queue-dry@example.test")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "config", "user.name", "Queue Dry Test")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "init", "--json")
+
+	aID := createQueueDryGateBead(t, projectDir, failurePath, "A ready no deps")
+	bID := createQueueDryGateBead(t, projectDir, failurePath, "B blocked by A")
+	cID := createQueueDryGateBead(t, projectDir, failurePath, "C blocked by B")
+	dID := createQueueDryGateBead(t, projectDir, failurePath, "D blocked by A")
+	eID := createQueueDryGateBead(t, projectDir, failurePath, "E deferred")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "dep", "add", bID, aID)
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "dep", "add", cID, bID)
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "dep", "add", dID, aID)
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "defer", eID, "--until", "2027-01-01")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "sync", "--flush-only")
+
+	readyIDs := queueDryGateReadyIDs(t, projectDir, failurePath)
+	report := collectQueueDryReport(projectDir, time.Now().UTC(), 24*time.Hour, 0, time.Minute, 5)
+
+	if !report.Evidence.CountsVerified {
+		t.Fatalf("CountsVerified=false, evidence=%+v warnings=%v errors=%v", report.Evidence, report.Warnings, report.Errors)
+	}
+	if report.Evidence.ReadyCount != len(readyIDs) {
+		t.Fatalf("ReadyCount=%d, want %d (br ready returned %v)", report.Evidence.ReadyCount, len(readyIDs), readyIDs)
+	}
+	if report.Evidence.ActionableCount != len(readyIDs) {
+		t.Fatalf("ActionableCount=%d, want %d", report.Evidence.ActionableCount, len(readyIDs))
+	}
+	if len(report.Evidence.TriageTopIDs) > 3 {
+		t.Fatalf("TriageTopIDs=%v, want at most 3", report.Evidence.TriageTopIDs)
+	}
+
+	readySet := make(map[string]struct{}, len(readyIDs))
+	for _, id := range readyIDs {
+		readySet[id] = struct{}{}
+	}
+	for _, id := range report.Evidence.TriageTopIDs {
+		if _, ok := readySet[id]; !ok {
+			t.Fatalf("TriageTopIDs contains %q which br ready does not report ready (%v)", id, readyIDs)
+		}
+	}
+	if !containsStringSlice(report.Evidence.TriageTopIDs, aID) {
+		t.Fatalf("TriageTopIDs=%v, want ready bead %s offered", report.Evidence.TriageTopIDs, aID)
+	}
+	for _, blocked := range []string{bID, cID, dID, eID} {
+		if containsStringSlice(report.Evidence.TriageTopIDs, blocked) {
+			t.Fatalf("TriageTopIDs=%v, must not contain blocked/deferred bead %s", report.Evidence.TriageTopIDs, blocked)
+		}
+	}
+}
+
+func TestQueueDryExcludesBeadWithThreeOpenBlockers(t *testing.T) {
+	requireQueueDryGateCommand(t, "br")
+	requireQueueDryGateCommand(t, "git")
+
+	projectDir := t.TempDir()
+	failurePath := filepath.Join(projectDir, "failure.txt")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "init")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "config", "user.email", "queue-dry@example.test")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "config", "user.name", "Queue Dry Test")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "init", "--json")
+
+	blocker1 := createQueueDryGateBead(t, projectDir, failurePath, "blocker one")
+	blocker2 := createQueueDryGateBead(t, projectDir, failurePath, "blocker two")
+	blocker3 := createQueueDryGateBead(t, projectDir, failurePath, "blocker three")
+	target := createQueueDryGateBead(t, projectDir, failurePath, "target with three open blockers")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "dep", "add", target, blocker1)
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "dep", "add", target, blocker2)
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "dep", "add", target, blocker3)
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "sync", "--flush-only")
+
+	// All three blockers open: the target is blocked and must be absent.
+	report := collectQueueDryReport(projectDir, time.Now().UTC(), 24*time.Hour, 0, time.Minute, 5)
+	if containsStringSlice(report.Evidence.TriageTopIDs, target) {
+		t.Fatalf("TriageTopIDs=%v, must not contain blocked bead %s", report.Evidence.TriageTopIDs, target)
+	}
+
+	// Closing one or two blockers is not enough; the target stays blocked.
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "close", blocker1, "--reason", "done")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "sync", "--flush-only")
+	report = collectQueueDryReport(projectDir, time.Now().UTC(), 24*time.Hour, 0, time.Minute, 5)
+	if containsStringSlice(report.Evidence.TriageTopIDs, target) {
+		t.Fatalf("after one blocker closed, TriageTopIDs=%v must not contain %s", report.Evidence.TriageTopIDs, target)
+	}
+
+	// All three closed: the target appears (this is the presence half of the
+	// mutation check, so a queue-dry that returns nothing cannot pass).
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "close", blocker2, "--reason", "done")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "close", blocker3, "--reason", "done")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "sync", "--flush-only")
+	report = collectQueueDryReport(projectDir, time.Now().UTC(), 24*time.Hour, 0, time.Minute, 5)
+	if !containsStringSlice(report.Evidence.TriageTopIDs, target) {
+		t.Fatalf("after all blockers closed, TriageTopIDs=%v must contain %s", report.Evidence.TriageTopIDs, target)
+	}
+
+	// Reopen one blocker: the target disappears again.
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "reopen", blocker3, "--reason", "reopened")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "sync", "--flush-only")
+	report = collectQueueDryReport(projectDir, time.Now().UTC(), 24*time.Hour, 0, time.Minute, 5)
+	if containsStringSlice(report.Evidence.TriageTopIDs, target) {
+		t.Fatalf("after reopening a blocker, TriageTopIDs=%v must not contain %s", report.Evidence.TriageTopIDs, target)
+	}
+}
+
+func TestQueueDryJSONShapeUnchanged(t *testing.T) {
+	oldGetReadyIDs := queueDryGetReadyIDs
+	queueDryGetReadyIDs = func(context.Context, string) ([]string, error) {
+		return []string{"bd-a", "bd-b"}, nil
+	}
+	t.Cleanup(func() {
+		queueDryGetReadyIDs = oldGetReadyIDs
+	})
+
+	report := collectQueueDryReport(t.TempDir(), time.Now().UTC(), 24*time.Hour, 0, 10*time.Minute, 1)
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed struct {
+		Evidence map[string]json.RawMessage `json:"evidence"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{
+		"open_count",
+		"actionable_count",
+		"blocked_count",
+		"in_progress_count",
+		"ready_count",
+		"counts_verified",
+		"triage_top_ids",
+	} {
+		if _, ok := parsed.Evidence[key]; !ok {
+			t.Fatalf("evidence JSON missing key %q: %s", key, string(data))
+		}
 	}
 }
 
