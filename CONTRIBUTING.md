@@ -34,16 +34,35 @@ go test ./...
 golangci-lint run
 ```
 
-### Shared-Worktree Commit Provenance
+### Beads Export on Commit
 
-When multiple agents share one worktree, the generated pre-commit hook runs
-`br sync --flush-only` and stages every tracked `.beads` JSONL file. That can
-silently add another agent's Beads state after an explicit code pathspec was
-chosen. For a code-only commit, inspect the staged diff, then commit only
-owned paths with a message file and `--no-verify`; an agent that owns the
-Beads update must serialize its separate sync/commit. Do not rewrite history
-to correct an attribution mistake: add a forward changelog correction that
-names the actual implementation commit.
+The tracked `.beads/issues.jsonl` is the only copy of the tracker that travels
+with the repository — `.beads/beads.db` is git-ignored — so the repository ships
+the hooks that keep the export current. `.githooks/pre-commit` runs
+`br sync --flush-only` and stages every tracked `.beads` file; `.githooks/commit-msg`
+carries the attribution guard the global hooks path would otherwise supply, so
+pointing this repository at its own hooks directory removes nothing.
+
+Install the hooks with one command:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+To uninstall, `git config --unset core.hooksPath` returns the repository to the
+global hooks path; the tracked `.githooks/` directory can stay in place.
+
+The hook fails closed: if `br` cannot flush the export, the commit is refused
+with the tracker's own guidance (reconcile with `br sync --merge`, or bypass once
+with `--no-verify`).
+
+**Shared-worktree provenance.** The pre-commit hook stages the beads export on
+every commit, which can silently add another agent's Beads state after an
+explicit code pathspec was chosen. For a code-only commit, inspect the staged
+diff, then commit only owned paths with a message file and `--no-verify`; an
+agent that owns the Beads update must serialize its separate sync/commit. Do not
+rewrite history to correct an attribution mistake: add a forward changelog
+correction that names the actual implementation commit.
 
 ---
 
