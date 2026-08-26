@@ -359,16 +359,32 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 		healthByPaneID[agent.PaneID] = agent
 	}
 
+	// Count how many monitored agents actually exist in the session.
+	// If the entire monitored pane set has vanished, do not treat missing panes
+	// as individual agent crashes (which would spam false alarms and attempt
+	// restarts on non-existent panes). The pane set vanishing is a lifecycle termination.
+	var monitoredExistingCount int
+	for paneID := range m.agents {
+		if _, exists := healthByPaneID[paneID]; exists {
+			monitoredExistingCount++
+		}
+	}
+	if len(m.agents) > 0 && monitoredExistingCount == 0 {
+		m.mu.Unlock()
+		log.Printf("[resilience] Monitored pane set for session %s has vanished (0/%d panes found)", m.session, len(m.agents))
+		return
+	}
+
 	// Check each monitored agent
 	for paneID, agentState := range m.agents {
 		agentHealth, exists := healthByPaneID[paneID]
 
-		// If pane doesn't exist anymore, agent crashed hard
+		// If pane doesn't exist anymore, it cannot be restarted with SendKeys;
+		// do not treat as an active crash that triggers alarms or auto-restart attempts.
 		if !exists {
 			if agentState.Healthy {
 				agentState.Healthy = false
 				agentState.LastCrash = time.Now()
-				crashes = append(crashes, crashEvent{*agentState, "Pane no longer exists"})
 			}
 			continue
 		}

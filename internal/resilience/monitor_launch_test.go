@@ -3,7 +3,9 @@ package resilience
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +70,58 @@ func TestBuildSpawnManifest(t *testing.T) {
 	}
 	if loaded.Session != m.Session || len(loaded.Agents) != len(m.Agents) || loaded.Agents[1].PaneID != "0.3" {
 		t.Fatalf("persisted manifest mismatch: %+v", loaded)
+	}
+}
+
+// TestMonitorProcessPattern_POSIXCompliance tests that the pattern returned by
+// MonitorProcessPatternForExecutable is valid POSIX ERE that works with pgrep and pkill.
+func TestMonitorProcessPattern_POSIXCompliance(t *testing.T) {
+	pattern := MonitorProcessPatternForExecutable("/usr/bin/ntm", "bd-odr-sess")
+
+	// Must not contain non-capturing groups `(?:` which POSIX ERE rejects
+	if strings.Contains(pattern, "(?:") {
+		t.Fatalf("pattern contains non-capturing group (?: which breaks POSIX pgrep/pkill: %s", pattern)
+	}
+
+	// Test with grep -E (standard POSIX ERE engine)
+	testCases := []struct {
+		input string
+		match bool
+	}{
+		{"ntm internal-monitor bd-odr-sess", true},
+		{"/usr/bin/ntm internal-monitor bd-odr-sess", true},
+		{"/usr/bin/ntm internal-monitor bd-odr-sess extra", true},
+		{"/usr/bin/ntm internal-monitor bd-odr-sess2", false},
+		{"/usr/bin/ntm-dev internal-monitor bd-odr-sess", false},
+		{"other ntm internal-monitor bd-odr-sess", true},
+	}
+
+	for _, tc := range testCases {
+		cmd := exec.Command("grep", "-E", pattern)
+		cmd.Stdin = strings.NewReader(tc.input)
+		err := cmd.Run()
+		matched := (err == nil)
+		if matched != tc.match {
+			t.Errorf("grep -E %q against %q: got matched=%v, want %v", pattern, tc.input, matched, tc.match)
+		}
+	}
+}
+
+// TestFindMonitorPIDs_NoMatchReturnsNil tests that a non-running session returns empty PIDs without error.
+func TestFindMonitorPIDs_NoMatchReturnsNil(t *testing.T) {
+	pids, err := FindMonitorPIDs("nonexistent-test-session-xyz-12345")
+	if err != nil {
+		t.Fatalf("FindMonitorPIDs error = %v, want nil", err)
+	}
+	if len(pids) != 0 {
+		t.Fatalf("FindMonitorPIDs got %v, want empty", pids)
+	}
+}
+
+// TestKillExistingMonitorProcess_SafeWhenNoneRunning tests that KillExistingMonitorProcess
+// exits cleanly with no error when no monitor process is running.
+func TestKillExistingMonitorProcess_SafeWhenNoneRunning(t *testing.T) {
+	if err := KillExistingMonitorProcess("nonexistent-test-session-xyz-12345"); err != nil {
+		t.Fatalf("KillExistingMonitorProcess error = %v, want nil", err)
 	}
 }

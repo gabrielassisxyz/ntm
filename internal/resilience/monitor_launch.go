@@ -65,7 +65,7 @@ func MonitorProcessPatternForExecutable(executablePath, session string) string {
 	if execName == "" {
 		execName = "ntm"
 	}
-	return `(?:^|[[:space:]])(?:[^[:space:]]*/)?` + regexp.QuoteMeta(execName) + `[[:space:]]+internal-monitor[[:space:]]+` + regexp.QuoteMeta(session) + `(?:[[:space:]]|$)`
+	return `(^|[[:space:]])([^[:space:]]*/)?` + regexp.QuoteMeta(execName) + `[[:space:]]+internal-monitor[[:space:]]+` + regexp.QuoteMeta(session) + `([[:space:]]|$)`
 }
 
 // MonitorProcessPattern builds the monitor process pattern for the current
@@ -75,14 +75,48 @@ func MonitorProcessPattern(session string) string {
 	if err != nil {
 		executablePath = "ntm"
 	}
+	execName := strings.TrimSpace(filepath.Base(executablePath))
+	if execName == "" || strings.HasSuffix(execName, ".test") || strings.Contains(execName, ".test") {
+		executablePath = "ntm"
+	}
 	return MonitorProcessPatternForExecutable(executablePath, session)
+}
+
+// FindMonitorPIDs returns the process IDs of any running internal monitor for the session.
+func FindMonitorPIDs(session string) ([]int, error) {
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return nil, fmt.Errorf("invalid session name: %w", err)
+	}
+	pattern := MonitorProcessPattern(session)
+	if strings.TrimSpace(pattern) == "" {
+		return nil, errors.New("empty monitor process pattern")
+	}
+	out, err := exec.Command("pgrep", "-f", pattern).Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var pid int
+		if _, scanErr := fmt.Sscanf(line, "%d", &pid); scanErr == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids, nil
 }
 
 // IsMonitorAlive checks whether the resilience monitor process is running for
 // the given session by looking for the "internal-monitor <session>" process.
 func IsMonitorAlive(session string) bool {
-	err := exec.Command("pgrep", "-f", MonitorProcessPattern(session)).Run()
-	return err == nil
+	pids, err := FindMonitorPIDs(session)
+	return err == nil && len(pids) > 0
 }
 
 // KillExistingMonitorProcess terminates any running internal monitor for the
@@ -95,7 +129,14 @@ func KillExistingMonitorProcess(session string) error {
 	if strings.TrimSpace(pattern) == "" {
 		return errors.New("empty monitor process pattern")
 	}
-	return exec.Command("pkill", "-f", pattern).Run()
+	out, err := exec.Command("pkill", "-f", pattern).CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("pkill monitor failed: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func currentExecutablePath() (string, error) {
@@ -163,9 +204,10 @@ type SpawnMonitorRequest struct {
 
 // SpawnMonitorResult reports what the shared path did.
 type SpawnMonitorResult struct {
-	Manifest       *SpawnManifest
-	MonitorStarted bool
-	MonitorPID     int
+	Manifest               *SpawnManifest
+	MonitorStarted         bool
+	MonitorPID             int
+	ExistingMonitorStopped bool
 }
 
 // StartSessionMonitor is the single manifest-writing + monitor-launching code
@@ -195,16 +237,26 @@ func StartSessionMonitor(ctx context.Context, req SpawnMonitorRequest) (*SpawnMo
 	result := &SpawnMonitorResult{Manifest: manifest}
 
 	// Replace an already-running monitor for this session.
+	var stoppedExisting bool
 	if IsMonitorAlive(req.Session) {
 		if err := KillExistingMonitorProcess(req.Session); err == nil {
-			select {
-			case <-time.After(500 * time.Millisecond):
-			case <-ctx.Done():
-				return result, fmt.Errorf("session monitor replacement canceled: %w", ctx.Err())
+			stoppedExisting = true
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				if !IsMonitorAlive(req.Session) {
+					break
+				}
+				select {
+				case <-time.After(50 * time.Millisecond):
+				case <-ctx.Done():
+					result.ExistingMonitorStopped = stoppedExisting
+					return result, fmt.Errorf("session monitor replacement canceled: %w", ctx.Err())
+				}
 			}
 		}
 		// A failed kill is non-fatal: proceed and let the new monitor start.
 	}
+	result.ExistingMonitorStopped = stoppedExisting
 
 	cmd, err := NewInternalMonitorCommand(req.Session)
 	if err != nil {
