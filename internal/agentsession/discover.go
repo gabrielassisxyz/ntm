@@ -78,7 +78,12 @@ type Info struct {
 	SessionID string `json:"session_id"`
 	// Provider is the casr/native provider name ("claude", "codex", "gemini", "antigravity").
 	Provider string `json:"provider"`
-	// SourcePath is the on-disk session file the id was discovered from.
+	// SourcePath is the on-disk session file the id was discovered from. The
+	// json:"-" withholds it from serialization only: an in-process Go caller
+	// may read it, and for Codex and Gemini it is the ONLY way to the file —
+	// Codex shards rollouts by date and identifies them by a cwd embedded in
+	// the body, and Gemini resolves its chat directory through a registry, so
+	// neither path can be rebuilt from an id without scanning.
 	SourcePath string `json:"-"`
 	// UpdatedAt is the modification time of the session file.
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
@@ -89,6 +94,8 @@ type Info struct {
 // BindingObservation is a bounded, point-in-time provider-session sample.
 // SourcePath remains process-private so status surfaces do not expose local
 // transcript locations; session persistence may copy it explicitly when needed.
+// Process-private means "absent from JSON", not "unreachable": a Go caller in
+// this repository reads the field directly.
 type BindingObservation struct {
 	AgentType       string           `json:"agent_type"`
 	SessionID       string           `json:"session_id,omitempty"`
@@ -830,7 +837,7 @@ func infoFromSessionFile(agentType, provider, path string) *Info {
 	return info
 }
 
-// encodeClaudeProjectDir reproduces Claude Code's project-directory encoding:
+// ClaudeProjectDir reproduces Claude Code's project-directory encoding:
 // every non-alphanumeric character in the absolute cwd becomes '-', e.g.
 //
 //	/data/projects/ntm                -> -data-projects-ntm
@@ -842,7 +849,14 @@ func infoFromSessionFile(agentType, provider, path string) *Info {
 // non-existent (or, worse, a different project's hyphen-variant) directory and
 // resume the wrong session — verified against the real `~/.claude/projects/`
 // session dirs, where every underscore cwd maps to a hyphenated directory.
-func encodeClaudeProjectDir(workDir string) string {
+//
+// This is the single implementation of that encoding. It is exported because a
+// second one had grown in internal/context (a rune loop over the RAW cwd), and
+// the two disagreed on every path filepath.Clean would rewrite: "/a/b/" encoded
+// as "-a-b" here and "-a-b-" there, and only one of those names a directory
+// that exists. Cleaning first is the correct half — a Claude project directory
+// is always derived from an absolute, cleaned cwd.
+func ClaudeProjectDir(workDir string) string {
 	cleaned := filepath.Clean(workDir)
 	return claudeNonAlnumPattern.ReplaceAllString(cleaned, "-")
 }
@@ -857,7 +871,7 @@ func discoverClaudeContext(ctx context.Context, home, workDir string) *Info {
 	if ctx.Err() != nil {
 		return nil
 	}
-	projDir := filepath.Join(home, ".claude", "projects", encodeClaudeProjectDir(workDir))
+	projDir := filepath.Join(home, ".claude", "projects", ClaudeProjectDir(workDir))
 	path, mod := newestFileWithExtContext(ctx, projDir, ".jsonl")
 	if path == "" {
 		return nil

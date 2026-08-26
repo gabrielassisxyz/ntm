@@ -91,8 +91,8 @@ func TestEncodeClaudeProjectDir(t *testing.T) {
 		"/data/projects/ntm/":                        "-data-projects-ntm", // trailing slash cleaned
 	}
 	for in, want := range cases {
-		if got := encodeClaudeProjectDir(in); got != want {
-			t.Errorf("encodeClaudeProjectDir(%q) = %q, want %q", in, got, want)
+		if got := ClaudeProjectDir(in); got != want {
+			t.Errorf("ClaudeProjectDir(%q) = %q, want %q", in, got, want)
 		}
 	}
 
@@ -100,8 +100,8 @@ func TestEncodeClaudeProjectDir(t *testing.T) {
 	// wrongly PRESERVED '_', which resolved to a non-existent (or a different
 	// project's) directory and resumed the wrong Claude session. Underscores must
 	// collapse to '-' to match Claude Code.
-	if got := encodeClaudeProjectDir("/data/projects/coding_agent_session_search"); strings.Contains(got, "_") {
-		t.Errorf("encodeClaudeProjectDir must collapse underscores to '-': got %q", got)
+	if got := ClaudeProjectDir("/data/projects/coding_agent_session_search"); strings.Contains(got, "_") {
+		t.Errorf("ClaudeProjectDir must collapse underscores to '-': got %q", got)
 	}
 }
 
@@ -339,7 +339,7 @@ func TestDiscoverContextCancelledBeforeNativeScanIsRetryable(t *testing.T) {
 
 	home := t.TempDir()
 	workDir := "/data/projects/native-cancel"
-	projectDir := filepath.Join(home, ".claude", "projects", encodeClaudeProjectDir(workDir))
+	projectDir := filepath.Join(home, ".claude", "projects", ClaudeProjectDir(workDir))
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +423,7 @@ func TestShellQuote(t *testing.T) {
 func TestDiscoverClaude(t *testing.T) {
 	home := t.TempDir()
 	workDir := "/data/projects/demo"
-	projDir := filepath.Join(home, ".claude", "projects", encodeClaudeProjectDir(workDir))
+	projDir := filepath.Join(home, ".claude", "projects", ClaudeProjectDir(workDir))
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

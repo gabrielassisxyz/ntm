@@ -1,6 +1,7 @@
 package context
 
 import (
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,6 +154,26 @@ func TestMungeProjectPath(t *testing.T) {
 	for in, want := range cases {
 		if got := MungeProjectPath(in); got != want {
 			t.Errorf("MungeProjectPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestMungeProjectPathDelegatesToTheOneEncoder proves this package no longer
+// carries its own copy of Claude's layout rule. The two implementations
+// disagreed on every cwd filepath.Clean rewrites — a trailing slash produced a
+// directory name with a trailing '-' here and without one in agentsession, and
+// only one of those exists on disk. Asserting agreement rather than a literal
+// keeps them from drifting apart again.
+func TestMungeProjectPathDelegatesToTheOneEncoder(t *testing.T) {
+	for _, cwd := range []string{
+		"/Users/x/projects/ntm",
+		"/Users/x/projects/ntm/",
+		"/Users/x/projects/../projects/ntm",
+		"/a b/c_d.e",
+		"/tmp//double//slash",
+	} {
+		if got, want := MungeProjectPath(cwd), agentsession.ClaudeProjectDir(cwd); got != want {
+			t.Errorf("MungeProjectPath(%q) = %q, agentsession.ClaudeProjectDir = %q", cwd, got, want)
 		}
 	}
 }
