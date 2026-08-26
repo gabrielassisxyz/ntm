@@ -9,19 +9,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
-
-// claudeProjectDirEncodingForTest reproduces Claude Code's own project
-// directory encoding (every non-alphanumeric byte becomes '-'), the same
-// external contract internal/agentsession relies on. Duplicated here because
-// the production encoder is unexported in that package.
-var claudeProjectDirEncodingForTest = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
 func TestGetIsWorkingReportsAgentSessionIDMatchingRealTranscriptFile(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
@@ -55,7 +49,7 @@ func TestGetIsWorkingReportsAgentSessionIDMatchingRealTranscriptFile(t *testing.
 	// Plant a fake Claude Code transcript for this exact working directory —
 	// the native-store fallback discoverClaudeContext resolves purely from
 	// home + workDir, needing no matching "claude" process in the pane.
-	encodedWorkDir := claudeProjectDirEncodingForTest.ReplaceAllString(filepath.Clean(workDir), "-")
+	encodedWorkDir := agentsession.ClaudeProjectDir(workDir)
 	projectDir := filepath.Join(tmpHome, ".claude", "projects", encodedWorkDir)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("create fake claude project dir: %v", err)
@@ -129,7 +123,7 @@ func TestGetIsWorkingOmitsAgentSessionIDWithoutOptIn(t *testing.T) {
 		t.Fatalf("set pane title: %v", err)
 	}
 
-	encodedWorkDir := claudeProjectDirEncodingForTest.ReplaceAllString(filepath.Clean(workDir), "-")
+	encodedWorkDir := agentsession.ClaudeProjectDir(workDir)
 	projectDir := filepath.Join(tmpHome, ".claude", "projects", encodedWorkDir)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("create fake claude project dir: %v", err)

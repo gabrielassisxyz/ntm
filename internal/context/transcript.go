@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 )
 
 // TranscriptUsage is the last usage record extracted from an agent's own
@@ -209,17 +211,15 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 // MungeProjectPath converts a working directory into the directory name
 // Claude Code uses under ~/.claude/projects: every character that is not an
 // ASCII letter or digit becomes '-' (e.g. /Users/x/proj -> -Users-x-proj).
+//
+// The encoding itself lives in internal/agentsession, which owns provider
+// session layout for all four CLIs. This used to be a second copy of it, and
+// the copies disagreed on any cwd filepath.Clean would rewrite ("/a/b/" gave
+// "-a-b-" here and "-a-b" there), which resolves to a directory that does not
+// exist. Delegating keeps this name for its callers without keeping a second
+// implementation of the rule.
 func MungeProjectPath(cwd string) string {
-	var b strings.Builder
-	b.Grow(len(cwd))
-	for _, r := range cwd {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('-')
-		}
-	}
-	return b.String()
+	return agentsession.ClaudeProjectDir(cwd)
 }
 
 // DefaultClaudeProjectsDir returns ~/.claude/projects, or "" if the home
