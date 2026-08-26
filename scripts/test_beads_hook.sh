@@ -23,6 +23,15 @@
 # than adding to it, so without the tracked .githooks/commit-msg this install would
 # silently disable the guard the global path provides today.
 #
+# Scenario 4 — stale export on disk while the database is ahead: exercises the
+# hook's `br sync --flush-only`. An ordinary `br create` auto-flushes the JSONL
+# export on every mutation, leaving the file on disk already current before the
+# hook runs; in that happy path the flush is never exercised and deleting it leaves
+# all tests green. Creating a bead with `br --no-auto-flush` advances the database
+# without updating the export on disk (simulating an export failure such as /tmp
+# quota exhaustion); the hook must flush the database to disk before staging so
+# the new bead reaches the commit.
+#
 # WHY --allow-empty in the commits. git computes committability from the index it
 # read BEFORE running the pre-commit hook and only re-reads the index on the success
 # path, so a hook that stages the export cannot make a plain, previously-empty
@@ -139,7 +148,7 @@ fi
 # ---------------------------------------------------------------------------
 # Scenario 2: commit from a linked worktree made by scripts/worktree.sh new.
 # ---------------------------------------------------------------------------
-wt_out="$(cd "$CLONE" && WORKTREE_BASE="$TMP_BASE/worktrees" bash "$REPO_ROOT/scripts/worktree.sh" new "$WT_BRANCH" 2>&1)"
+wt_out="$(cd "$CLONE" && WORKTREE_BASE="$WT_BASE" bash "$REPO_ROOT/scripts/worktree.sh" new "$WT_BRANCH" 2>&1)"
 WT_DIR="$(printf '%s\n' "$wt_out" | awk '/^  cd /{print $2; found=1} END{exit !found}')"
 if [ -z "$WT_DIR" ] || [ ! -d "$WT_DIR" ]; then
     fail "s2: worktree.sh new did not report a usable worktree path"
@@ -192,6 +201,49 @@ if (cd "$CLONE" && git commit --allow-empty -q -m "test: beads-hook clean messag
     pass "s3: a clean commit message is accepted"
 else
     fail "s3: a clean commit message was refused — the guard misfires"
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 4: stale export on disk while the database is ahead — exercises the
+# hook's export flush (`br sync --flush-only`).
+#
+# WHY an ordinary br create cannot exercise this path: br auto-flushes the JSONL
+# export on every mutation, so by the time the hook runs the file is already
+# current on disk and only the staging loop is exercised. If all scenarios use
+# the happy path, removing `br sync --flush-only` from .githooks/pre-commit
+# leaves every test green.
+#
+# In production, an export can fail while the DB write succeeds (e.g. /tmp quota
+# exhaustion during br create, or br invoked with --no-auto-flush). In that state
+# the database holds the bead, the export on disk does not, and the hook's flush
+# is the only thing between that and a commit whose tracker snapshot silently omits
+# the bead. Creating a bead with `br --no-auto-flush` reproduces this precondition.
+# ---------------------------------------------------------------------------
+id4="$( (cd "$CLONE" && br --no-auto-flush create --title="beads-hook stale-export probe bead (auto-closed, throwaway)" --type=chore --json 2>/dev/null | jq -r '.id // empty') )"
+if [ -z "$id4" ] || [ "$id4" = "null" ]; then
+    fail "s4: could not create a probe bead with --no-auto-flush in the clone"
+else
+    CREATED_BEAD_IDS+=("$id4")
+    if ! grep -q "$id4" "$CLONE/.beads/issues.jsonl"; then
+        pass "s4: bead $id4 exists in database but NOT in issues.jsonl on disk (stale-export precondition)"
+    else
+        fail "s4: bead $id4 unexpectedly present in issues.jsonl before flush"
+    fi
+
+    if (cd "$CLONE" && git commit --allow-empty -q -m "test: beads-hook scenario 4 stale-export probe commit"); then
+        if [ -z "$(git -C "$CLONE" status --porcelain .beads)" ]; then
+            pass "s4: .beads clean after the commit (pre-commit hook flushed and staged the export)"
+        else
+            fail "s4: .beads dirty after the commit — the export was not staged"
+        fi
+        if git -C "$CLONE" show HEAD:.beads/issues.jsonl | grep -q "$id4"; then
+            pass "s4: bead $id4 is in the committed issues.jsonl"
+        else
+            fail "s4: bead $id4 is NOT in the committed issues.jsonl"
+        fi
+    else
+        fail "s4: commit failed — see git output above"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
