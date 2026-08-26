@@ -93,6 +93,11 @@ type Request struct {
 	// codex TUIs concatenate a fresh send onto leftover buffer text after an
 	// interrupt, corrupting both.
 	ClearInput bool
+	// Force bypasses the composer-clear refusal (bd-hf1): the clear sequence
+	// still runs, but a HoldsText/Indeterminate verdict no longer blocks the
+	// delivery. The operator's last resort was raw tmux paste — the override
+	// keeps that path inside the checked delivery path.
+	Force bool
 }
 
 // Target is a resolved pane with a topology-safe response address.
@@ -149,6 +154,8 @@ type Delivery struct {
 	EnterDelay       time.Duration
 	SecondEnterDelay time.Duration
 	ClearInput       bool
+	// Force bypasses the composer-clear refusal; see Request.Force.
+	Force bool
 }
 
 // Pace describes one wait between two adjacent delivery attempts.
@@ -370,6 +377,13 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 // concatenate and corrupt both payloads — while an unverifiable clear
 // (no marker visible) proceeds best-effort. User/unknown panes are skipped:
 // C-u in an operator shell would kill whatever the human was typing.
+//
+// bd-hf1: agent TUIs render an empty composer's placeholder in the same
+// cells real input occupies, so a non-empty marker line is not itself
+// evidence of a dirty composer. The clear result therefore distinguishes
+// holds-text (refuse as before) from indeterminate (refuse naming the
+// reason and the override) from cleared (proceed), and delivery.Force
+// bypasses both refusal classes.
 func ClearComposerForDelivery(ctx context.Context, target string, delivery Delivery) error {
 	if !delivery.ClearInput {
 		return nil
@@ -378,14 +392,32 @@ func ClearComposerForDelivery(ctx context.Context, target string, delivery Deliv
 	if canonical == tmux.AgentUser || canonical == tmux.AgentUnknown || !canonical.IsValid() {
 		return nil
 	}
-	cleared, verified, err := tmux.ClearComposerContext(ctx, target, delivery.Target.AgentType)
+	result, err := tmux.ClearComposerContext(ctx, target, delivery.Target.AgentType)
 	if err != nil {
 		return fmt.Errorf("COMPOSER_CLEAR_FAILED: pane %s: %w", delivery.Target.Ref.Physical(), err)
 	}
-	if !cleared && verified {
-		return fmt.Errorf("COMPOSER_NOT_CLEARED: pane %s composer still holds text after the clear sequence; inspect with --robot-tail before resending", delivery.Target.Ref.Physical())
+	return composerClearDeliveryError(delivery.Target.Ref.Physical(), result, delivery.Force)
+}
+
+// composerClearDeliveryError maps a composer-clear result onto the delivery
+// refusal. Only positively verified leftovers (HoldsText) or an
+// unclassifiable capture (Indeterminate) refuse, and every refusal names
+// the --force override so the operator is never pushed back to raw tmux;
+// the error text no longer asserts "still holds text" when the pane state
+// was never established (bd-hf1). force bypasses the refusal but the clear
+// sequence still runs first.
+func composerClearDeliveryError(target string, result tmux.ComposerClearResult, force bool) error {
+	if result.Cleared || force {
+		return nil
 	}
-	return nil
+	switch {
+	case result.HoldsText:
+		return fmt.Errorf("COMPOSER_NOT_CLEARED: pane %s composer still holds text after the clear sequence; inspect with --robot-tail, or resend with --force to deliver anyway", target)
+	case result.Indeterminate:
+		return fmt.Errorf("COMPOSER_NOT_CLEARED: pane %s: cannot tell whether the composer holds text or is showing a placeholder; inspect with --robot-tail, or resend with --force to deliver anyway", target)
+	default:
+		return fmt.Errorf("COMPOSER_NOT_CLEARED: pane %s composer could not be verified clear; inspect with --robot-tail, or resend with --force to deliver anyway", target)
+	}
 }
 
 // VerifyAgentSubmission closes the gap between "keys were sent" and "the
@@ -713,6 +745,7 @@ func (s *Service) Prepare(ctx context.Context, req Request) (prepared *Prepared,
 			EnterDelay:       plan.EnterDelay,
 			SecondEnterDelay: plan.SecondEnterDelay,
 			ClearInput:       req.ClearInput,
+			Force:            req.Force,
 		}
 		prepared.entries[i].receipt.Protocol = plan.Protocol
 		prepared.entries[i].receipt.EnterDelay = plan.EnterDelay

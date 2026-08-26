@@ -167,6 +167,13 @@ func sendOperationBindingHash(opts SendOptions) string {
 	}
 	writeField(enter)
 	writeField(strconv.FormatBool(opts.ClearInput))
+	// bd-hf1: the --force override joins the binding only when set, so a
+	// command recorded by an earlier NTM (which had no Force field) still
+	// hashes identically when retried without --force — the same
+	// cross-version pattern WithMemory uses above.
+	if opts.Force {
+		writeField(strconv.FormatBool(opts.Force))
+	}
 	// The --with-cass/--with-memory TOGGLES are part of the command; the
 	// injected content is deliberately not (it varies between attempts).
 	writeField(strconv.FormatBool(opts.WithCASS))

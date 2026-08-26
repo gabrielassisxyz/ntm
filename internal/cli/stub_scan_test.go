@@ -149,6 +149,17 @@ var placeholderAllowlist = map[string]map[string]string{
 	"internal/cli/mail.go": {
 		"placeholder (case-insensitive, standalone word)": "comment about default subject field being unchanged",
 	},
+
+	// Composer TUI hints (bd-hf1): agent TUIs render an EMPTY composer's
+	// placeholder hint text in the same cells real input occupies — the
+	// placeholder/composer distinction is the core domain of the
+	// composer-clear classifier and its refusal text.
+	"internal/tmux/session.go": {
+		"placeholder (case-insensitive, standalone word)": "composer placeholder hint text is the classifier's domain terminology",
+	},
+	"internal/dispatch/dispatch.go": {
+		"placeholder (case-insensitive, standalone word)": "composer placeholder vs held-text distinction in the clear refusal",
+	},
 }
 
 // placeholderHit records a single match found during scanning.

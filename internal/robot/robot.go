@@ -6358,6 +6358,7 @@ type SendOptions struct {
 	DelayMs        int      // Delay between sends in milliseconds
 	DryRun         bool     // If true, show what would be sent without actually sending
 	ClearInput     bool     // Clear residual composer text (verified) before typing (ntm-5p0b)
+	Force          bool     // Bypass the composer-clear refusal (bd-hf1): clear still runs, refusal no longer blocks
 	Enter          *bool    // If set, override Enter behavior after paste
 	VerifyRender   bool     // Capture bounded before/after pane output and require rendered evidence
 	RequestID      string   // External request identifier for REST parity
@@ -7064,6 +7065,7 @@ func robotPreparedDispatchRequest(allPanes, targetPanes []tmux.Pane, opts SendOp
 		Delay:             time.Duration(opts.DelayMs) * time.Millisecond,
 		DryRun:            opts.DryRun,
 		ClearInput:        opts.ClearInput,
+		Force:             opts.Force,
 	}
 }
 

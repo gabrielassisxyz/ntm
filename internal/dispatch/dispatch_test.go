@@ -1162,3 +1162,91 @@ func TestRefuseDeadAgentPane(t *testing.T) {
 		t.Fatalf("user pane refused: %v", err)
 	}
 }
+
+// bd-hf1: the composer-clear refusal must distinguish "positively holds
+// text" from "cannot tell placeholder from content", must stop asserting
+// "still holds text" when the state was never established, and must point
+// at the --force override — the operator's only alternative was raw tmux.
+func TestComposerClearDeliveryError(t *testing.T) {
+	target := "1.3"
+	cases := []struct {
+		name          string
+		result        tmux.ComposerClearResult
+		force         bool
+		wantNil       bool
+		wantSubstring string
+	}{
+		{
+			name:    "cleared proceeds",
+			result:  tmux.ComposerClearResult{Cleared: true, Verified: true},
+			wantNil: true,
+		},
+		{
+			name:    "unverified clear proceeds best-effort",
+			result:  tmux.ComposerClearResult{Cleared: true},
+			wantNil: true,
+		},
+		{
+			name:          "holds text refuses with evidence wording",
+			result:        tmux.ComposerClearResult{HoldsText: true, Verified: true},
+			wantSubstring: "composer still holds text",
+		},
+		{
+			name:          "indeterminate refuses without asserting dirty",
+			result:        tmux.ComposerClearResult{Indeterminate: true},
+			wantSubstring: "cannot tell whether the composer holds text or is showing a placeholder",
+		},
+		{
+			name:    "force bypasses holds-text refusal",
+			result:  tmux.ComposerClearResult{HoldsText: true, Verified: true},
+			force:   true,
+			wantNil: true,
+		},
+		{
+			name:    "force bypasses indeterminate refusal",
+			result:  tmux.ComposerClearResult{Indeterminate: true},
+			force:   true,
+			wantNil: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := composerClearDeliveryError(target, tc.result, tc.force)
+			if tc.wantNil {
+				if err != nil {
+					t.Fatalf("composerClearDeliveryError = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("composerClearDeliveryError = nil, want refusal")
+			}
+			if !strings.Contains(err.Error(), "COMPOSER_NOT_CLEARED") {
+				t.Fatalf("refusal %q missing COMPOSER_NOT_CLEARED code", err.Error())
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstring) {
+				t.Fatalf("refusal %q missing %q", err.Error(), tc.wantSubstring)
+			}
+			if !strings.Contains(err.Error(), "--force") {
+				t.Fatalf("refusal %q must name the --force override", err.Error())
+			}
+			if !strings.Contains(err.Error(), "1.3") {
+				t.Fatalf("refusal %q must name the pane", err.Error())
+			}
+		})
+	}
+}
+
+// Regression (bd-hf1): the exact placeholder from the reproduction — an
+// empty claude composer re-rendering the last prompt — maps to a cleared
+// result, and the delivery error must be nil, never COMPOSER_NOT_CLEARED.
+func TestComposerClearDeliveryError_PlaceholderNeverRefuses(t *testing.T) {
+	for _, result := range []tmux.ComposerClearResult{
+		{Cleared: true, Verified: true},
+		{Cleared: true},
+	} {
+		if err := composerClearDeliveryError("1.8", result, false); err != nil {
+			t.Fatalf("cleared composer refused: %v", err)
+		}
+	}
+}
