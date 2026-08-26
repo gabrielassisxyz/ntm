@@ -868,7 +868,10 @@ type QueueDryEvidence struct {
 	Reservations       QueueDryReservations `json:"reservations"`
 	RecentCommits      []QueueDryCommit     `json:"recent_commits,omitempty"`
 	BeadsSummaryReason string               `json:"beads_summary_reason,omitempty"`
-	TriageError        string               `json:"triage_error,omitempty"`
+	// TriageError is retained for JSON shape compatibility with existing
+	// consumers. queue-dry no longer calls bv triage (readiness comes from
+	// `br ready`), so this field is never populated.
+	TriageError string `json:"triage_error,omitempty"`
 }
 
 // QueueDryStaleIssue represents one stale in-progress bead candidate.
@@ -1010,11 +1013,10 @@ type CommitReadyMailEvidence struct {
 const (
 	queueDryReservationTimeout       = 2 * time.Second
 	queueDryReservationHealthTimeout = 1 * time.Second
-	queueDryTriageTimeout            = 2 * time.Second
 )
 
-var queueDryGetTriage = func(dir string) (*bv.TriageResponse, error) {
-	return bv.GetTriageWithTimeout(dir, queueDryTriageTimeout)
+var queueDryGetReadyIDs = func(ctx context.Context, dir string) ([]string, error) {
+	return bv.GetReadyIDsContext(ctx, dir)
 }
 
 var queueDryCollectOptional = func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
@@ -1706,47 +1708,48 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		Project:             dir,
 	}
 
-	summary := bv.GetBeadsSummary(dir, 5)
-	if summary == nil || !summary.Available {
+	// Readiness comes from the tracker's own `br ready` (open, unblocked, not
+	// deferred). bv triage's actionable_count is a status filter that does not
+	// walk the dependency graph, so it can report a blocked bead as ready
+	// (bd-zf9). Delegate to `br ready` so the count and the id set agree with
+	// the tracker bead for bead, and refuse to publish a number when the graph
+	// cannot be walked.
+	readyIDs, readyErr := queueDryGetReadyIDs(context.Background(), dir)
+	if readyErr != nil {
 		report.Success = false
-		report.Evidence.BeadsSummaryReason = "beads summary unavailable"
-		if summary != nil && strings.TrimSpace(summary.Reason) != "" {
-			report.Evidence.BeadsSummaryReason = summary.Reason
-		}
+		report.Evidence.BeadsSummaryReason = "ready set unavailable: " + readyErr.Error()
 		report.Errors = append(report.Errors, report.Evidence.BeadsSummaryReason)
 	} else {
+		report.Evidence.ReadyCount = len(readyIDs)
+		report.Evidence.ActionableCount = len(readyIDs)
+		report.Evidence.CountsVerified = true
+		for i, id := range readyIDs {
+			if i >= 3 {
+				break
+			}
+			report.Evidence.TriageTopIDs = append(report.Evidence.TriageTopIDs, id)
+		}
+	}
+
+	// Open/blocked/in-progress counts are status filters by design and come
+	// from br stats. A failure here degrades the status counts but not the
+	// readiness result, which is already settled above.
+	summary := bv.GetBeadsSummary(dir, 5)
+	if summary == nil || !summary.Available {
+		reason := "beads summary unavailable"
+		if summary != nil && strings.TrimSpace(summary.Reason) != "" {
+			reason = summary.Reason
+		}
+		report.Warnings = append(report.Warnings, "beads summary unavailable: "+reason)
+	} else {
 		report.Evidence.OpenCount = summary.Open
-		report.Evidence.ActionableCount = summary.Ready
 		report.Evidence.BlockedCount = summary.Blocked
 		report.Evidence.InProgressCount = summary.InProgress
-		report.Evidence.ReadyCount = summary.Ready
-		report.Evidence.CountsVerified = true
 		inProgress, listErr := bv.GetInProgressListContext(context.Background(), dir, 0)
 		if listErr != nil {
 			report.Warnings = append(report.Warnings, fmt.Sprintf("in-progress bead list unavailable: %v", listErr))
 		} else {
 			report.Evidence.StaleInProgress = findStaleInProgress(inProgress, now, staleThreshold, staleLimit)
-		}
-	}
-
-	triage, triageErr := queueDryGetTriage(dir)
-	if triageErr != nil {
-		report.Warnings = append(report.Warnings, fmt.Sprintf("bv triage unavailable: %v", triageErr))
-		report.Evidence.TriageError = triageErr.Error()
-	} else if triage != nil {
-		report.Evidence.OpenCount = triage.Triage.QuickRef.OpenCount
-		report.Evidence.ActionableCount = triage.Triage.QuickRef.ActionableCount
-		report.Evidence.BlockedCount = triage.Triage.QuickRef.BlockedCount
-		report.Evidence.InProgressCount = triage.Triage.QuickRef.InProgressCount
-		report.Evidence.CountsVerified = true
-		if report.Evidence.ReadyCount == 0 {
-			report.Evidence.ReadyCount = triage.Triage.QuickRef.ActionableCount
-		}
-		for i, rec := range triage.Triage.Recommendations {
-			if i >= 3 {
-				break
-			}
-			report.Evidence.TriageTopIDs = append(report.Evidence.TriageTopIDs, rec.ID)
 		}
 	}
 

@@ -3064,6 +3064,40 @@ func GetReadyPreviewContext(ctx context.Context, dir string, limit int) ([]BeadP
 	return previews, nil
 }
 
+// GetReadyIDsContext returns the full set of ready bead IDs from `br ready
+// --json`, preserving the tracker's own definition of ready (open, unblocked,
+// not deferred) and its priority ordering. Readiness must come from `br ready`
+// rather than from a status filter: a bead whose own status is open but whose
+// blockers are open is not ready, and bv triage's actionable_count does not
+// walk the dependency graph (bd-zf9).
+func GetReadyIDsContext(ctx context.Context, dir string) ([]string, error) {
+	if ctx == nil {
+		return nil, errors.New("ready ids context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// A large explicit --limit keeps the set complete on br builds whose
+	// default limit is finite (older builds treat --limit 0 as zero rows).
+	output, err := RunBdContext(ctx, dir, "ready", "--json", "--limit", "100000")
+	if err != nil {
+		return nil, fmt.Errorf("list ready beads: %w", err)
+	}
+	items, err := UnmarshalBdList[struct {
+		ID string `json:"id"`
+	}](output)
+	if err != nil {
+		return nil, fmt.Errorf("parse ready beads: %w", err)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if id := strings.TrimSpace(item.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
 // GetInProgressList returns in-progress beads with assignees.
 //
 // br walks the filesystem upward to find a workspace root, so this can
