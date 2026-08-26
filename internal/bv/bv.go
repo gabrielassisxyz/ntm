@@ -2048,17 +2048,28 @@ func loadGuardedClaimIssue(ctx context.Context, tx *sql.Tx, beadID string) (guar
 	return issue, nil
 }
 
+// insertGuardedClaimEvent writes one claim/release event. agent_name, harness
+// and model come from the per-pane ClaimAttribution AtomicCoordinator.Execute
+// attaches to ctx (bd-4gw): a single ntm process claims for many panes of
+// different agent types in one run, so the process environment alone cannot
+// vary per pane. A claim path with no attribution on ctx — every caller
+// outside the Beads assignment claim, today — falls back field-by-field to
+// the process environment, exactly as this function did before attribution
+// existed.
 func insertGuardedClaimEvent(ctx context.Context, tx *sql.Tx, beadID, eventType, actor, oldValue, newValue string, createdAt time.Time) error {
 	nullableOld := any(oldValue)
 	if strings.TrimSpace(oldValue) == "" {
 		nullableOld = nil
 	}
+	attribution := assignmentstore.ClaimAttributionFromContext(ctx)
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO events
 			(issue_id, event_type, actor, old_value, new_value, comment, created_at, agent_name, harness, model)
 		VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
 		beadID, eventType, actor, nullableOld, newValue, createdAt.Format(time.RFC3339Nano),
-		nullableEnvironment("BR_AGENT_NAME"), nullableEnvironment("BR_HARNESS"), nullableEnvironment("BR_MODEL"))
+		attributionOrEnvironment(attribution.AgentName, "BR_AGENT_NAME"),
+		attributionOrEnvironment(attribution.Harness, "BR_HARNESS"),
+		attributionOrEnvironment(attribution.Model, "BR_MODEL"))
 	if err != nil {
 		return fmt.Errorf("record guarded claim %s event: %w", eventType, err)
 	}
@@ -2069,6 +2080,20 @@ func nullableEnvironment(name string) any {
 	value := strings.TrimSpace(os.Getenv(name))
 	if value == "" {
 		return nil
+	}
+	return value
+}
+
+// attributionOrEnvironment prefers a per-pane attribution value; a claim path
+// that carries none for this specific field (no item at all, or an item that
+// left it blank) falls back independently to the matching process
+// environment variable. Each of the three attribution fields is resolved on
+// its own, so an item that sets only agent_type still gets the environment's
+// BR_MODEL rather than losing it.
+func attributionOrEnvironment(itemValue, envName string) any {
+	value := strings.TrimSpace(itemValue)
+	if value == "" {
+		return nullableEnvironment(envName)
 	}
 	return value
 }
