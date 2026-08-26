@@ -2010,6 +2010,7 @@ Shell Integration:
 						Enter:        enterOverride,
 						DryRun:       robotDryRunEffective,
 						ClearInput:   robotSendClearInput,
+						Force:        robotSmartRestartForce,
 						VerifyRender: robotSendVerifyRender,
 						WithCASS:     withCASS,
 						CASSConfig:   cassQuery,
@@ -2044,6 +2045,7 @@ Shell Integration:
 				Enter:          enterOverride,
 				DryRun:         robotDryRunEffective,
 				ClearInput:     robotSendClearInput,
+				Force:          robotSmartRestartForce,
 				VerifyRender:   robotSendVerifyRender,
 				IdempotencyKey: strings.TrimSpace(robotSendOpID),
 				WithCASS:       withCASS,
@@ -4175,7 +4177,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotAgentHealthNoCaut, "no-caut", false, "Skip caut provider query for faster local-only health check. Optional with --robot-agent-health")
 	rootCmd.Flags().BoolVar(&robotAgentHealthVerbose, "agent-health-verbose", false, "Include raw sample output in --robot-agent-health response. Example: --agent-health-verbose")
 	rootCmd.Flags().StringVar(&robotSmartRestart, "robot-smart-restart", "", "SAFE restart: checks --robot-is-working first, refuses to interrupt working agents. Required: SESSION. Example: ntm --robot-smart-restart=myproject --panes=2,3")
-	rootCmd.Flags().BoolVar(&robotSmartRestartForce, "force", false, "DANGEROUS: Force execution for commands that support it. With --robot-smart-restart, restart even if an agent appears to be working. With --robot-interrupt, send Ctrl+C even if an agent already looks ready. Use with extreme caution!")
+	rootCmd.Flags().BoolVar(&robotSmartRestartForce, "force", false, "DANGEROUS: Force execution for commands that support it. With --robot-smart-restart, restart even if an agent appears to be working. With --robot-interrupt, send Ctrl+C even if an agent already looks ready. With --robot-send --clear-input, deliver even when the composer-clear check refuses (the composer may hold text or be unverifiable). Use with extreme caution!")
 	rootCmd.Flags().BoolVar(&robotSmartRestartDryRun, "smart-restart-dry-run", false, "Show what would happen without performing restart. Optional with --robot-smart-restart")
 	rootCmd.Flags().StringVar(&robotSmartRestartPrompt, "prompt", "", "Send this prompt to the agent after restart. Optional with --robot-smart-restart")
 	rootCmd.Flags().BoolVar(&robotSmartRestartVerbose, "smart-restart-verbose", false, "Include extra debugging info in --robot-smart-restart response")

@@ -2961,6 +2961,233 @@ func TestComposerLineEmpty_PlaceholderCountsAsEmpty(t *testing.T) {
 	}
 }
 
+func TestComposerMarkerLineText(t *testing.T) {
+	cases := []struct {
+		name    string
+		capture string
+		marker  string
+		want    string
+		wantOK  bool
+	}{
+		{"empty composer", "transcript\n❯ \n", "❯", "", true},
+		{"placeholder text", "chat\n❯ check ready pool again for new work\n", "❯", "check ready pool again for new work", true},
+		{"history echo above live composer", "❯ old submitted msg\nworking...\n❯ \n", "❯", "", true},
+		{"no marker visible", "plain shell output\n$ \n", "›", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := composerMarkerLineText(tc.capture, tc.marker)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("composerMarkerLineText = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// bd-hf1: an EMPTY claude composer re-renders the last submitted prompt as
+// greyed placeholder text, so a plain capture of an empty composer can carry
+// arbitrary text after the marker. The probe types one literal character
+// into the composer: a placeholder is replaced wholesale by the probe char
+// (the after-line IS the probe), real content survives and gains the probe.
+func TestClassifyComposerProbe(t *testing.T) {
+	const probe = composerProbeChar
+	cases := []struct {
+		name          string
+		before, after string
+		want          composerProbeVerdict
+	}{
+		{"placeholder replaced by probe", "check ready pool again for new work", probe, composerProbeEmpty},
+		{"placeholder that is the probe char", probe, probe, composerProbeEmpty},
+		{"content appends probe at cursor end", "stale prompt", "stale prompt" + probe, composerProbeHoldsText},
+		{"content gains probe at cursor start", "stale prompt", probe + "stale prompt", composerProbeHoldsText},
+		{"surviving probe char appends", probe, probe + probe, composerProbeHoldsText},
+		{"mid-render truncation", "stale prompt", "stal", composerProbeIndeterminate},
+		{"unchanged line", "stale prompt", "stale prompt", composerProbeIndeterminate},
+		{"line vanished", "stale prompt", "", composerProbeIndeterminate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyComposerProbe(tc.before, tc.after, probe); got != tc.want {
+				t.Fatalf("classifyComposerProbe(%q, %q) = %v, want %v", tc.before, tc.after, got, tc.want)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// bd-hf1: composer-clear choreography against a simulated claude composer
+// ============================================================================
+//
+// The bug: `ntm send --clear-input` refused on an EMPTY claude composer
+// because claude re-renders the last submitted prompt as greyed placeholder
+// text in the same cells real input occupies, and the verification read the
+// placeholder as leftover text. The whole defect is that rendered text
+// under-determines the state, so these tests run the real
+// ClearComposerContext choreography (send-keys, capture-pane, the probe)
+// against a pane running a tiny raw-mode python program with the exact
+// placeholder semantics the reproduction verified by hand: typing replaces
+// the placeholder wholesale, C-u kills real content but leaves a placeholder
+// untouched, and Escape is a no-op.
+
+// composerSimulatorScript renders the simulated claude composer. PLACEHOLDER
+// is the greyed hint text of an empty composer, INITIAL is real typed
+// content, and C_U_KILLS mirrors whether the TUI's line-kill works (false
+// models a composer whose content survives the clear sequence).
+const composerSimulatorScript = `import os, sys, termios, tty
+PLACEHOLDER = %q
+INITIAL = %q
+C_U_KILLS = %s
+fd = sys.stdin.fileno()
+attrs = termios.tcgetattr(fd)
+tty.setraw(fd)
+buf = INITIAL
+def line():
+    if buf == "":
+        return "❯ " + PLACEHOLDER
+    return "❯ " + buf
+def render():
+    sys.stdout.write("\r\x1b[2K" + line())
+    sys.stdout.flush()
+render()
+while True:
+    ch = sys.stdin.read(1)
+    if not ch or ch == "\x03":
+        break
+    if ch == "\x15":  # C-u
+        if C_U_KILLS and buf != "":
+            buf = ""
+    elif ch == "\x1b":  # Escape: no-op, like claude's composer
+        pass
+    elif ch in ("\r", "\n"):  # submit: composer empties
+        buf = ""
+    else:
+        if buf == "":
+            buf = ch
+        else:
+            buf += ch
+    render()
+`
+
+// startComposerSimulatorPane launches the simulator into the first pane of a
+// fresh session and returns the pane ID, waiting until the composer line has
+// rendered.
+func startComposerSimulatorPane(t *testing.T, placeholder, initial string, cUKills bool) string {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available; composer simulator tests skipped")
+	}
+	script := filepath.Join(t.TempDir(), "composer_sim.py")
+	pyBool := "False"
+	if cUKills {
+		pyBool = "True"
+	}
+	content := fmt.Sprintf(composerSimulatorScript, placeholder, initial, pyBool)
+	if err := os.WriteFile(script, []byte(content), 0o600); err != nil {
+		t.Fatalf("write composer simulator: %v", err)
+	}
+	name := fmt.Sprintf("ntm_composer_sim_%d", time.Now().UnixNano())
+	if err := CreateSession(name, t.TempDir()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	t.Cleanup(func() { _ = KillSession(name) })
+	panes, err := GetPanes(name)
+	if err != nil || len(panes) == 0 {
+		t.Fatalf("GetPanes(%s) = %v, %v", name, panes, err)
+	}
+	paneID := panes[0].ID
+	if err := SendKeys(paneID, python+" -u "+script, true); err != nil {
+		t.Fatalf("launch composer simulator: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		capture, err := CapturePaneVisible(paneID)
+		if err == nil && strings.Contains(capture, "❯") {
+			return paneID
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	capture, _ := CapturePaneVisible(paneID)
+	t.Fatalf("composer simulator did not render its prompt line; pane capture: %q", capture)
+	return ""
+}
+
+// reproductionPlaceholder is the exact placeholder line from the bd-hf1
+// reproduction: an empty claude composer re-rendering the last submitted
+// prompt as greyed hint text.
+const reproductionPlaceholder = "check ready pool again for new work"
+
+func TestClearComposerContext_PlaceholderDoesNotRefuse(t *testing.T) {
+	skipIfNoTmux(t)
+	paneID := startComposerSimulatorPane(t, reproductionPlaceholder, "", true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, err := ClearComposerContext(ctx, paneID, AgentClaude)
+	if err != nil {
+		t.Fatalf("ClearComposerContext: %v", err)
+	}
+	if !result.Cleared || !result.Verified {
+		t.Fatalf("empty composer with placeholder: result = %+v, want Cleared+Verified", result)
+	}
+	if result.HoldsText || result.Indeterminate {
+		t.Fatalf("empty composer with placeholder misclassified as dirty: %+v", result)
+	}
+}
+
+func TestClearComposerContext_EmptyComposerNoPlaceholder(t *testing.T) {
+	skipIfNoTmux(t)
+	paneID := startComposerSimulatorPane(t, "", "", true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, err := ClearComposerContext(ctx, paneID, AgentClaude)
+	if err != nil {
+		t.Fatalf("ClearComposerContext: %v", err)
+	}
+	if !result.Cleared || !result.Verified {
+		t.Fatalf("empty composer = %v, want Cleared+Verified", result)
+	}
+}
+
+func TestClearComposerContext_HeldContentRefuses(t *testing.T) {
+	skipIfNoTmux(t)
+	// C-u does NOT kill: models a composer whose real content survives the
+	// clear sequence — the case the refusal exists for.
+	paneID := startComposerSimulatorPane(t, "", "half typed prompt", false)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, err := ClearComposerContext(ctx, paneID, AgentClaude)
+	if err != nil {
+		t.Fatalf("ClearComposerContext: %v", err)
+	}
+	if !result.HoldsText || !result.Verified {
+		t.Fatalf("composer holding typed content = %v, want HoldsText+Verified", result)
+	}
+	if result.Cleared {
+		t.Fatalf("composer holding typed content must not read as cleared")
+	}
+}
+
+func TestClearComposerContext_ContentKilledByClearSequence(t *testing.T) {
+	skipIfNoTmux(t)
+	// C-u kills real content in this model: the clear sequence clears the
+	// held prompt, the placeholder re-renders, and the probe must confirm
+	// the composer is empty — the existing protection, without a refusal.
+	paneID := startComposerSimulatorPane(t, "", "half kept typed prompt", true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, err := ClearComposerContext(ctx, paneID, AgentClaude)
+	if err != nil {
+		t.Fatalf("ClearComposerContext: %v", err)
+	}
+	if !result.Cleared || !result.Verified {
+		t.Fatalf("content killed by clear sequence = %v, want Cleared+Verified", result)
+	}
+}
+
 // pi captures, read off a live pi 0.84.2 pane (mirrors
 // internal/agent/testdata/pi_idle.txt and pi_working.txt, and the fixtures
 // internal/cli/spawn_state_test.go carries under the same names). The idle

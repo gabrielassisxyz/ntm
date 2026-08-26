@@ -3096,6 +3096,13 @@
           "description": "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing; recommended after interrupts on codex panes"
         },
         {
+          "name": "force",
+          "flag": "--force",
+          "type": "bool",
+          "required": false,
+          "description": "With --clear-input: deliver even when the composer-clear check refuses (the composer may hold text or be unverifiable); the clear sequence still runs first"
+        },
+        {
           "name": "verify-render",
           "flag": "--verify-render",
           "type": "bool",
@@ -10343,6 +10350,13 @@
           "type": "bool",
           "required": false,
           "description": "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing; recommended after interrupts on codex panes"
+        },
+        {
+          "name": "force",
+          "flag": "--force",
+          "type": "bool",
+          "required": false,
+          "description": "With --clear-input: deliver even when the composer-clear check refuses (the composer may hold text or be unverifiable); the clear sequence still runs first"
         },
         {
           "name": "verify-render",

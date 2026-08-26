@@ -2251,29 +2251,106 @@ func composerPlaceholderPrefixes(agentType AgentType) []string {
 	}
 }
 
-// composerLineEmpty reports whether the bottom-most marker line in the
-// capture carries no composer text. found=false means no marker line was
-// visible at all (verification impossible). Hint text the TUI renders in an
-// empty composer counts as empty.
-func composerLineEmpty(capture, marker string, placeholderPrefixes []string) (found, empty bool) {
+// composerMarkerLineText returns the text after the marker on the
+// bottom-most marker line in the capture ("" when the marker line carries
+// nothing but the marker glyph). found=false means no marker line was
+// visible at all.
+func composerMarkerLineText(capture, marker string) (text string, found bool) {
 	lines := strings.Split(capture, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		idx := strings.Index(lines[i], marker)
 		if idx < 0 {
 			continue
 		}
-		text := strings.TrimSpace(lines[i][idx+len(marker):])
-		if text == "" {
+		return strings.TrimSpace(lines[i][idx+len(marker):]), true
+	}
+	return "", false
+}
+
+// composerLineEmpty reports whether the bottom-most marker line in the
+// capture carries no composer text. found=false means no marker line was
+// visible at all (verification impossible). Hint text the TUI renders in an
+// empty composer counts as empty.
+func composerLineEmpty(capture, marker string, placeholderPrefixes []string) (found, empty bool) {
+	text, found := composerMarkerLineText(capture, marker)
+	if !found {
+		return false, false
+	}
+	if text == "" {
+		return true, true
+	}
+	for _, prefix := range placeholderPrefixes {
+		if strings.HasPrefix(text, prefix) {
 			return true, true
 		}
-		for _, prefix := range placeholderPrefixes {
-			if strings.HasPrefix(text, prefix) {
-				return true, true
-			}
-		}
-		return true, false
 	}
-	return false, false
+	return true, false
+}
+
+// composerProbeChar is the literal character typed into a composer whose
+// post-clear line is ambiguous (bd-hf1). An EMPTY composer's placeholder is
+// replaced by the typed character, so the marker line collapses to the
+// probe char; a composer holding real content keeps that content and gains
+// the probe at the cursor. That asymmetry is the one rendered-text signal
+// that separates the two states, and the reproduction verified it by hand:
+// `send-keys -l "X"` replaced the whole placeholder line, which a composer
+// holding content would not do.
+const composerProbeChar = "X"
+
+// ComposerClearResult reports what the pre-send composer clear established
+// about the pane (bd-hf1). A plain capture cannot separate an empty
+// composer's placeholder from real input — claude re-renders the last
+// submitted prompt as greyed hint text — so the result carries three states
+// instead of the old boolean pair: positively empty, positively holding
+// content, and unclassifiable.
+type ComposerClearResult struct {
+	// Cleared: the composer holds no operator content; a fresh prompt will
+	// not concatenate with existing input. May be true without Verified
+	// when no marker was visible to confirm against (fail-open contract).
+	Cleared bool
+	// Verified: Cleared was positively established from pane captures.
+	Verified bool
+	// HoldsText: the composer POSITIVELY holds content that survived the
+	// clear sequence; typing into it would concatenate both payloads.
+	HoldsText bool
+	// Indeterminate: neither Cleared nor HoldsText could be established —
+	// the capture is ambiguous (mid-render, cursor parked mid-text,
+	// unknown placeholder shape). A refusal on this state must say so and
+	// point at the override rather than assert a dirty composer.
+	Indeterminate bool
+}
+
+// composerProbeVerdict classifies what the typed probe character revealed
+// about the composer.
+type composerProbeVerdict int
+
+const (
+	// composerProbeEmpty: the probe replaced a placeholder — the composer
+	// held no content before the probe (it now holds the probe character).
+	composerProbeEmpty composerProbeVerdict = iota
+	// composerProbeHoldsText: the probe joined existing content — the
+	// composer holds a real prompt that survived the clear sequence.
+	composerProbeHoldsText
+	// composerProbeIndeterminate: the after-probe line matches neither
+	// shape; the pane state is unknown.
+	composerProbeIndeterminate
+)
+
+// classifyComposerProbe decides what the probe character revealed about a
+// composer, from the marker-line text captured before and after the probe
+// was typed. An empty composer's placeholder is replaced wholesale by the
+// probe char, so the after-line IS the probe char; real content survives
+// and gains the probe at the cursor (end or start in practice). Anything
+// else — a mid-render capture, a cursor parked mid-text — is indeterminate.
+func classifyComposerProbe(before, after, probe string) composerProbeVerdict {
+	switch after {
+	case probe:
+		return composerProbeEmpty
+	case before + probe, probe + before:
+		return composerProbeHoldsText
+	default:
+		return composerProbeIndeterminate
+	}
 }
 
 // ComposerState is the message-independent view of an agent pane's input
@@ -2473,46 +2550,148 @@ func ComposerClassifierVerdict(agentType AgentType) DeliveryReadinessVerdict {
 }
 
 // ClearComposerContext performs the per-agent pre-send composer clear and
-// verifies the composer is empty where the TUI exposes a marker. Returns
-// cleared=false only when verification POSITIVELY shows leftover text;
-// verified=false means the sequence was sent but emptiness could not be
-// confirmed (no marker visible / unknown TUI).
+// verifies the composer is empty where the TUI exposes a marker.
 //
-// pi stays on that unverified path (bd-3nv): verifying emptiness needs to
+// The verification cannot trust the marker line alone: agent TUIs render an
+// EMPTY composer's placeholder in the same cells real input occupies (claude
+// re-renders the last submitted prompt as greyed hint text, bd-hf1), so a
+// non-empty line is ambiguous. The probe step types one literal character
+// into the composer and compares the line: an empty composer's placeholder
+// is replaced by the probe char, real content survives and appends it. Only
+// when even the probe leaves the line unclassifiable does the result come
+// back Indeterminate instead of a false "holds text" verdict.
+//
+// pi stays on the unverified path (bd-3nv): verifying emptiness needs to
 // read leftover TEXT off the marker's line, and pi's idle/working predicates
 // report only busy-vs-idle, never composer content, so there is no signal
 // here for pi to classify against.
-func (c *Client) ClearComposerContext(ctx context.Context, target string, agentType AgentType) (cleared, verified bool, err error) {
+func (c *Client) ClearComposerContext(ctx context.Context, target string, agentType AgentType) (ComposerClearResult, error) {
 	for i, key := range ComposerClearKeys(agentType) {
 		if i > 0 {
 			if err := waitForSendDelay(ctx, composerClearKeyGap); err != nil {
-				return false, false, err
+				return ComposerClearResult{}, err
 			}
 		}
 		if err := c.RunSilentContext(ctx, "send-keys", "-t", target, key); err != nil {
-			return false, false, fmt.Errorf("send composer clear key %q: %w", key, err)
+			return ComposerClearResult{}, fmt.Errorf("send composer clear key %q: %w", key, err)
 		}
 	}
 	marker := composerMarkerForAgent(agentType)
 	if marker == "" {
-		return true, false, nil
+		return ComposerClearResult{Cleared: true}, nil
 	}
 	if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
-		return false, false, err
+		return ComposerClearResult{}, err
 	}
 	capture, err := c.CapturePaneVisibleContext(ctx, target)
 	if err != nil {
-		return false, false, fmt.Errorf("capture pane for composer clear verification: %w", err)
+		return ComposerClearResult{}, fmt.Errorf("capture pane for composer clear verification: %w", err)
 	}
 	found, empty := composerLineEmpty(capture, marker, composerPlaceholderPrefixes(agentType))
 	if !found {
-		return true, false, nil
+		// No marker line visible: the pane is not showing its input box, so
+		// the clear keys went nowhere recoverable — fail open exactly like
+		// the pre-clear readiness gate.
+		return ComposerClearResult{Cleared: true}, nil
 	}
-	return empty, true, nil
+	if empty {
+		return ComposerClearResult{Cleared: true, Verified: true}, nil
+	}
+	return c.clearComposerAmbiguousProbe(ctx, target, marker, capture)
+}
+
+// clearComposerAmbiguousProbe resolves a composer whose post-clear marker
+// line is neither empty nor a known placeholder hint. The line could be an
+// empty composer re-rendering its placeholder (the bd-hf1 false positive)
+// or real content that survived the clear. It types composerProbeChar and
+// classifies the result; on a positive placeholder reading it clears the
+// probe char and confirms the clear stuck before returning.
+func (c *Client) clearComposerAmbiguousProbe(ctx context.Context, target, marker string, beforeCapture string) (ComposerClearResult, error) {
+	probe := composerProbeChar
+	before, _ := composerMarkerLineText(beforeCapture, marker)
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "-l", "--", composerProbeChar); err != nil {
+		return ComposerClearResult{}, fmt.Errorf("send composer probe char: %w", err)
+	}
+	if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
+		return ComposerClearResult{}, err
+	}
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return ComposerClearResult{}, fmt.Errorf("capture pane for composer probe verification: %w", err)
+	}
+	after, found := composerMarkerLineText(capture, marker)
+	if !found {
+		// The marker vanished right after typing into the composer: the pane
+		// left its input box (dialog, menu, redraw) and the probe went
+		// nowhere recoverable. Fail open, matching the primary capture's
+		// !found path.
+		return ComposerClearResult{Cleared: true}, nil
+	}
+	switch classifyComposerProbe(before, after, probe) {
+	case composerProbeHoldsText:
+		return ComposerClearResult{HoldsText: true, Verified: true}, nil
+	case composerProbeIndeterminate:
+		return ComposerClearResult{Indeterminate: true}, nil
+	}
+	// The composer held no content before the probe; it now holds the probe
+	// character. Clear it and confirm: an empty composer re-renders its
+	// placeholder, so any line except a surviving probe char is the expected
+	// empty state — only a line still showing the probe means the clear
+	// itself failed.
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "C-u"); err != nil {
+		return ComposerClearResult{}, fmt.Errorf("clear composer probe char: %w", err)
+	}
+	if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
+		return ComposerClearResult{}, err
+	}
+	capture, err = c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return ComposerClearResult{}, fmt.Errorf("capture pane after probe clear: %w", err)
+	}
+	line, found := composerMarkerLineText(capture, marker)
+	if !found {
+		return ComposerClearResult{Cleared: true}, nil
+	}
+	if line != probe {
+		// Re-rendered placeholder (or an empty line): the clear stuck.
+		return ComposerClearResult{Cleared: true, Verified: true}, nil
+	}
+	// The line still shows the probe: either the clear failed (the probe
+	// survived) or an empty composer re-rendered a placeholder that happens
+	// to be exactly the probe char. Probe once more — a surviving probe
+	// appends ("XX"), a placeholder is replaced ("X").
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "-l", "--", probe); err != nil {
+		return ComposerClearResult{}, fmt.Errorf("send composer re-probe char: %w", err)
+	}
+	if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
+		return ComposerClearResult{}, err
+	}
+	capture, err = c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return ComposerClearResult{}, fmt.Errorf("capture pane for composer re-probe: %w", err)
+	}
+	after, found = composerMarkerLineText(capture, marker)
+	if !found {
+		return ComposerClearResult{Cleared: true}, nil
+	}
+	switch classifyComposerProbe(probe, after, probe) {
+	case composerProbeEmpty:
+		// Second replacement: the composer is empty and its placeholder is
+		// the probe char. Clear the re-typed probe; the clear has now been
+		// demonstrated twice in a row, so the composer is empty afterwards.
+		if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "C-u"); err != nil {
+			return ComposerClearResult{}, fmt.Errorf("clear composer re-probe char: %w", err)
+		}
+		return ComposerClearResult{Cleared: true, Verified: true}, nil
+	case composerProbeHoldsText:
+		return ComposerClearResult{HoldsText: true, Verified: true}, nil
+	default:
+		return ComposerClearResult{Indeterminate: true}, nil
+	}
 }
 
 // ClearComposerContext clears the composer using the default client.
-func ClearComposerContext(ctx context.Context, target string, agentType AgentType) (bool, bool, error) {
+func ClearComposerContext(ctx context.Context, target string, agentType AgentType) (ComposerClearResult, error) {
 	return DefaultClient.ClearComposerContext(ctx, target, agentType)
 }
 
