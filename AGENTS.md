@@ -47,6 +47,13 @@ one branch, no side branches" rule that history had already contradicted.
 - `scripts/worktree.sh rm <branch|task>` removes a worktree once its branch is merged — it
   refuses to discard uncommitted changes, unpushed commits, or worktree-only files unless
   forced with `-f`.
+- **Do not use `git stash` in a worktree.** `git stash` / `git stash pop` share ONE stash
+  stack across every worktree of a repository (the stack lives in the common git dir's
+  `refs/stash`, not in any worktree), so two agents stashing and popping concurrently each
+  restore the OTHER's changes into their own tree — invisible to `git status` and to any gate
+  that only inspects the branch's commits. Test on a pristine tree by committing and reverting
+  instead. `scripts/worktree.sh contamination` is the merge-time gate that catches the
+  crossing when it happens (bd-c2h).
 - **Do not create, use, or sync `master`** — if you see branch logic that references it,
   remove it.
 - **Do not create or keep a long-lived side branch** (e.g. a permanent `beads-sync` branch)

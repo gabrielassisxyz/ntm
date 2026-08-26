@@ -85,6 +85,13 @@ test-e2e:
 test-worktree-tool:
 	bash scripts/test_worktree.sh
 
+# Deliberately not part of `test`/`test-all`: it reproduces the bd-c2h cross-worktree
+# contamination (two agents sharing one `git stash` stack) in a scratch repository and asserts
+# `scripts/worktree.sh contamination` catches it.
+## Test scripts/worktree.sh contamination check (scratch repo, no live tracker)
+test-worktree-contamination:
+	bash scripts/test_worktree_contamination.sh
+
 # Deliberately not part of `test`/`test-all`: it needs br (beads_rust), clones this
 # repository into a scratch dir, and runs the repo-owned git hooks end to end.
 ## Test the repo-owned beads hooks (.githooks/pre-commit + commit-msg) in a scratch clone
