@@ -94,10 +94,13 @@ func TestGetIsWorkingReportsAgentSessionIDMatchingRealTranscriptFile(t *testing.
 		t.Fatalf("AgentSessionID = %q, want %q", got.AgentSessionID, wantSessionID)
 	}
 
-	// The join itself: the reported id must name a file that actually exists
-	// in that CLI's session directory, not merely a plausible-looking string.
-	if info, statErr := os.Stat(transcriptPath); statErr != nil || info.IsDir() {
-		t.Fatalf("transcript file for reported session id does not exist at %s: %v", transcriptPath, statErr)
+	// The join itself, walked in the direction a consumer walks it: the path
+	// is rebuilt from the id the surface REPORTED, so an id no transcript
+	// file backs fails here. Statting the planted path instead would hold
+	// whatever the surface said, which is not what the comment claims.
+	reportedTranscriptPath := filepath.Join(projectDir, got.AgentSessionID+".jsonl")
+	if info, statErr := os.Stat(reportedTranscriptPath); statErr != nil || info.IsDir() {
+		t.Fatalf("no transcript file backs reported session id %q at %s: %v", got.AgentSessionID, reportedTranscriptPath, statErr)
 	}
 }
 
