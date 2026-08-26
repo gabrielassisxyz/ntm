@@ -2400,6 +2400,22 @@ func buildProjectionBackedStatus(store *state.Store, cfg *config.Config, opts Pa
 	if err != nil {
 		return nil, fmt.Errorf("status sessions: %w", err)
 	}
+	// A session scope narrows the status to one session. The CLI resolves
+	// the name through the shared helper path, so a non-empty value here is
+	// already normalized (or is a raw name that did not match any live
+	// session). Refuse a scope that names no session rather than answering
+	// with an empty success.
+	if opts.Session != "" {
+		sessions = filterByName(sessions, opts.Session, func(s state.RuntimeSession) string { return s.Name })
+		if len(sessions) == 0 {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("session '%s' not found", opts.Session),
+				ErrCodeSessionNotFound,
+				"Use 'ntm list' to see available sessions",
+			)
+			return output, nil
+		}
+	}
 	agentsBySession := make(map[string][]state.RuntimeAgent, len(sessions))
 	for _, sess := range sessions {
 		agents, err := store.GetRuntimeAgentsBySession(sess.Name)
@@ -2493,6 +2509,23 @@ func buildLiveStatus(projectDir string, cfg *config.Config, opts PaginationOptio
 	snapshot, err := collectNormalizedTmuxProjection(resolvedProjectDir, normalizedProjectionStaleAfter)
 	if err != nil {
 		return output, nil
+	}
+
+	// A session scope narrows the status to one session (see the projection
+	// path for the rationale). Agents are a flat list across sessions, so
+	// they must be scoped alongside the sessions or the summary would count
+	// agents from other sessions.
+	if opts.Session != "" {
+		snapshot.Sessions = filterByName(snapshot.Sessions, opts.Session, func(s state.RuntimeSession) string { return s.Name })
+		if len(snapshot.Sessions) == 0 {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("session '%s' not found", opts.Session),
+				ErrCodeSessionNotFound,
+				"Use 'ntm list' to see available sessions",
+			)
+			return output, nil
+		}
+		snapshot.Agents = filterByName(snapshot.Agents, opts.Session, func(a state.RuntimeAgent) string { return a.SessionName })
 	}
 
 	for _, sess := range snapshot.Sessions {
@@ -10169,8 +10202,10 @@ type TerseOutput struct {
 }
 
 // GetTerse retrieves ultra-compact single-line state for token-constrained scenarios.
-func GetTerse(cfg *config.Config) (*TerseOutput, error) {
-	snapshot, err := GetSnapshot(cfg)
+// A non-empty session scopes the output to a single tmux session; a scope that
+// names no live session yields a SESSION_NOT_FOUND failure response.
+func GetTerse(cfg *config.Config, session string) (*TerseOutput, error) {
+	snapshot, err := GetSnapshotWithOptions(cfg, PaginationOptions{Session: session})
 	if err != nil {
 		return nil, err
 	}
@@ -10437,9 +10472,10 @@ func ParseTerse(s string) (*TerseState, error) {
 // PrintTerse outputs ultra-compact single-line state for token-constrained scenarios.
 // Output format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|^:NaNi|!:
 // If the attention feed is unavailable, an additional |T:feed:unavail suffix is appended.
-// Multiple sessions are separated by semicolons.
-func PrintTerse(cfg *config.Config) error {
-	output, err := GetTerse(cfg)
+// Multiple sessions are separated by semicolons. A non-empty session scopes the
+// output to a single tmux session.
+func PrintTerse(cfg *config.Config, session string) error {
+	output, err := GetTerse(cfg, session)
 	if err != nil {
 		return err
 	}

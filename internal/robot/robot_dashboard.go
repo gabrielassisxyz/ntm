@@ -36,8 +36,9 @@ type DashboardOutput struct {
 }
 
 // GetDashboard retrieves a dashboard-oriented view for AI orchestrators.
-// This function returns the data struct directly, enabling CLI/REST parity.
-func GetDashboard() (*DashboardOutput, error) {
+// A non-empty session scopes the output to a single tmux session; a scope that
+// names no live session yields a SESSION_NOT_FOUND failure response.
+func GetDashboard(session string) (*DashboardOutput, error) {
 	wd, _ := os.Getwd()
 	fleet := "ntm"
 	if wd != "" {
@@ -73,6 +74,22 @@ func GetDashboard() (*DashboardOutput, error) {
 	if tmux.IsInstalled() {
 		sessions, err := tmux.ListSessions()
 		if err == nil {
+			// A session scope narrows the dashboard to one session. The CLI
+			// resolves the name through the shared helper path, so a non-empty
+			// value here is already normalized (or is a raw name that did not
+			// match any live session). Refuse a scope that names no session
+			// rather than answering with an empty success.
+			if session != "" {
+				sessions = filterByName(sessions, session, func(s tmux.Session) string { return s.Name })
+				if len(sessions) == 0 {
+					output.RobotResponse = NewErrorResponse(
+						fmt.Errorf("session '%s' not found", session),
+						ErrCodeSessionNotFound,
+						"Use 'ntm list' to see available sessions",
+					)
+					return output, nil
+				}
+			}
 			for _, sess := range sessions {
 				snapSession := SnapshotSession{
 					Name:     sess.Name,
@@ -195,8 +212,9 @@ func dashboardAgentType(pane tmux.Pane) (string, bool) {
 }
 
 // PrintDashboard outputs a dashboard-oriented view for AI orchestrators.
-func PrintDashboard(jsonMode bool) error {
-	output, err := GetDashboard()
+// A non-empty session scopes the output to a single tmux session.
+func PrintDashboard(jsonMode bool, session string) error {
+	output, err := GetDashboard(session)
 	if err != nil {
 		return err
 	}
