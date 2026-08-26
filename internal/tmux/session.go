@@ -2105,6 +2105,12 @@ func needsBufferSend(agentType AgentType, content string) bool {
 		// Use buffer for Codex when content contains newlines or is large (>512 chars)
 		// This avoids the "[Pasted Content N chars]" truncation and auto-execute issues
 		return strings.Contains(content, "\n") || len(content) > 512
+	case AgentPi:
+		// pi's composer drops newlines delivered via send-keys -l, welding the
+		// last word of one line to the first word of the next. paste-buffer
+		// converts them to CR, which the composer reads as a line break, so
+		// multi-line prompts must go through the buffer path.
+		return strings.Contains(content, "\n")
 	default:
 		return false
 	}

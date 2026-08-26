@@ -2366,6 +2366,31 @@ func TestNeedsBufferSend(t *testing.T) {
 			content:   strings.Repeat("z", 513),
 			want:      true,
 		},
+		// Pi cases - uses buffer for multi-line content
+		{
+			name:      "pi single line",
+			agentType: AgentPi,
+			content:   "hello world",
+			want:      false,
+		},
+		{
+			name:      "pi with newline",
+			agentType: AgentPi,
+			content:   "line1\nline2",
+			want:      true,
+		},
+		{
+			name:      "pi multiple newlines",
+			agentType: AgentPi,
+			content:   "a\nb\nc\nd",
+			want:      true,
+		},
+		{
+			name:      "pi empty string",
+			agentType: AgentPi,
+			content:   "",
+			want:      false,
+		},
 		// User pane - never uses buffer
 		{
 			name:      "user single line",
@@ -2402,6 +2427,12 @@ func TestNeedsBufferSend(t *testing.T) {
 			name:      "aider with newline",
 			agentType: AgentAider,
 			content:   "test\ndata",
+			want:      false,
+		},
+		{
+			name:      "unknown with newline",
+			agentType: AgentUnknown,
+			content:   "a\nb",
 			want:      false,
 		},
 	}
