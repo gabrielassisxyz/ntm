@@ -463,6 +463,46 @@ func NonTerminalClaimGuardRequired(ctx context.Context) bool {
 	return required
 }
 
+type claimAttributionContextKey struct{}
+
+// ClaimAttribution is the per-pane identity of the item a claim is being made
+// for. One ntm process claims for many panes of different agent types (and
+// potentially different models) in a single run, so a process-wide value
+// cannot vary per pane; this is what does. A claim adapter that never reads
+// it (every path except the Beads assignment claim, today) keeps recording
+// only the process environment, exactly as it does before this type existed.
+type ClaimAttribution struct {
+	AgentName string
+	Harness   string
+	// Model is intentionally left for the caller to populate. AtomicRequest
+	// carries no resolved-model field: the assign-time item has no reliable
+	// resolved model the way spawn-time's spawnedAgentInfo does (nothing
+	// persists spawn's resolved model across the process boundary to assign
+	// time), so Execute leaves this empty rather than guessing from a
+	// title-substring heuristic. See internal/bv's use of this field.
+	Model string
+}
+
+// WithClaimAttribution attaches attribution to ctx for a claim adapter to
+// read downstream of ClaimPort.Claim. Execute sets this from the request it
+// was given; an adapter that ignores it is unaffected.
+func WithClaimAttribution(ctx context.Context, attribution ClaimAttribution) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, claimAttributionContextKey{}, attribution)
+}
+
+// ClaimAttributionFromContext returns the attribution Execute attached, or
+// the zero value when none was set.
+func ClaimAttributionFromContext(ctx context.Context) ClaimAttribution {
+	if ctx == nil {
+		return ClaimAttribution{}
+	}
+	attribution, _ := ctx.Value(claimAttributionContextKey{}).(ClaimAttribution)
+	return attribution
+}
+
 // AtomicRequest describes one claim-reserve-dispatch transaction.
 type AtomicRequest struct {
 	BeadID    string
@@ -1214,6 +1254,11 @@ func workingReplacementClaimActor(prior *Assignment) (string, error) {
 }
 
 func (c *AtomicCoordinator) ensureClaim(ctx context.Context, req AtomicRequest, actor string, recorded *Assignment) (ClaimReceipt, *Assignment, error) {
+	// req already carries the requesting item's own agent type and name
+	// (populated by every caller for pane addressing/dispatch), so attribution
+	// travels via ctx instead of widening ClaimPort.Claim's signature for
+	// every adapter and test fake that implements it.
+	ctx = WithClaimAttribution(ctx, ClaimAttribution{AgentName: req.AgentName, Harness: req.AgentType})
 	if req.claimRequiresNonTerminal || (recorded != nil && recorded.ClaimRequiresNonTerminal) {
 		ctx = WithNonTerminalClaimGuard(ctx)
 	}
