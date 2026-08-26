@@ -4,19 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestNewAgentLifecycleFailureResponseClassifiesPromptFailureAndMutation(t *testing.T) {
@@ -446,5 +451,184 @@ func TestAddResponseJSONIncludesModernAgentCounts(t *testing.T) {
 	}
 	if !strings.Contains(encoded, "\"added_ollama\":3") {
 		t.Fatalf("AddResponse JSON = %s, want added_ollama field", encoded)
+	}
+}
+
+func captureAddStdout(t *testing.T, run func() error) ([]byte, error) {
+	t.Helper()
+	previousStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create add stdout pipe: %v", err)
+	}
+	os.Stdout = writer
+	runErr := run()
+	if err := writer.Close(); err != nil {
+		os.Stdout = previousStdout
+		_ = reader.Close()
+		t.Fatalf("close add stdout writer: %v", err)
+	}
+	os.Stdout = previousStdout
+	data, readErr := io.ReadAll(reader)
+	if closeErr := reader.Close(); readErr == nil {
+		readErr = closeErr
+	}
+	return data, errors.Join(runErr, readErr)
+}
+
+func TestFormatAddAgentSummary_SinglePane(t *testing.T) {
+	newPanes := []output.PaneResponse{
+		{PaneID: "%3", Title: "proj__cc_2", Type: "cc"},
+	}
+	got := formatAddAgentSummary(9, newPanes)
+	wantID := "%3"
+	wantTotal := "total 9 panes now"
+	if !strings.Contains(got, wantID) {
+		t.Errorf("formatAddAgentSummary(single) = %q, want it to contain pane ID %q", got, wantID)
+	}
+	if !strings.Contains(got, wantTotal) {
+		t.Errorf("formatAddAgentSummary(single) = %q, want it to contain %q", got, wantTotal)
+	}
+	wantFull := "✓ Added 1 agent(s) (pane %3, total 9 panes now)"
+	if got != wantFull {
+		t.Errorf("formatAddAgentSummary(single) = %q, want %q", got, wantFull)
+	}
+}
+
+func TestFormatAddAgentSummary_MultiplePanes(t *testing.T) {
+	newPanes := []output.PaneResponse{
+		{PaneID: "%3", Title: "proj__cc_2", Type: "cc"},
+		{PaneID: "%4", Title: "proj__cod_1", Type: "cod"},
+	}
+	got := formatAddAgentSummary(10, newPanes)
+	if !strings.Contains(got, "total 10 panes now") {
+		t.Errorf("formatAddAgentSummary(multiple) = %q, want total count", got)
+	}
+	if !strings.Contains(got, "pane %3 (cc_2)") {
+		t.Errorf("formatAddAgentSummary(multiple) = %q, want pane %%3 with cc_2 label", got)
+	}
+	if !strings.Contains(got, "pane %4 (cod_1)") {
+		t.Errorf("formatAddAgentSummary(multiple) = %q, want pane %%4 with cod_1 label", got)
+	}
+}
+
+func TestFormatAddAgentSummary_PreservesTotal(t *testing.T) {
+	gotSingleBare := formatAddAgentSummary(5, []output.PaneResponse{{PaneID: ""}})
+	if !strings.Contains(gotSingleBare, "total 5 panes now") {
+		t.Errorf("formatAddAgentSummary = %q, want total 5 panes now", gotSingleBare)
+	}
+
+	gotZero := formatAddAgentSummary(4, nil)
+	if !strings.Contains(gotZero, "total 4 panes now") {
+		t.Errorf("formatAddAgentSummary = %q, want total 4 panes now", gotZero)
+	}
+}
+
+func TestAddResponseCarriesPaneIDs(t *testing.T) {
+	resp := output.AddResponse{
+		TotalAdded: 2,
+		NewPanes: []output.PaneResponse{
+			{PaneID: "%11", Title: "proj__cc_1", Type: "cc"},
+			{PaneID: "%12", Title: "proj__cod_1", Type: "cod"},
+		},
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal AddResponse: %v", err)
+	}
+	encoded := string(data)
+	if !strings.Contains(encoded, `"pane_id":"%11"`) {
+		t.Errorf("AddResponse JSON = %s, want pane_id %%11", encoded)
+	}
+	if !strings.Contains(encoded, `"pane_id":"%12"`) {
+		t.Errorf("AddResponse JSON = %s, want pane_id %%12", encoded)
+	}
+}
+
+func TestAddPrintsCreatedPaneID_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	if err := tmux.EnsureInstalled(); err != nil {
+		t.Skipf("tmux is required: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	session := fmt.Sprintf("test-add-pane-%d-%d", os.Getpid(), time.Now().UnixNano())
+
+	previousCfg := cfg
+	previousJSON := jsonOutput
+	cfg = newTmuxIntegrationTestConfig(tmpDir)
+	cfg.Agents.Claude = "/bin/cat"
+	cfg.Tmux.PaneInitDelayMs = 0
+	cfg.Checkpoints.Enabled = false
+	jsonOutput = false
+	t.Cleanup(func() {
+		cfg = previousCfg
+		jsonOutput = previousJSON
+	})
+
+	if err := tmux.CreateSession(session, tmpDir); err != nil {
+		t.Fatalf("create test session: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(session) })
+
+	initialPanes, err := tmux.GetPanesContext(context.Background(), session)
+	if err != nil || len(initialPanes) == 0 {
+		t.Fatalf("get initial panes: %v", err)
+	}
+	initialPaneID := initialPanes[0].ID
+
+	opts := AddOptions{
+		Session: session,
+		Agents: AgentSpecs{
+			{Type: AgentTypeClaude, Count: 1},
+		},
+		NoCassContext: true,
+	}
+
+	stdout, err := captureAddStdout(t, func() error {
+		return runAdd(context.Background(), opts)
+	})
+	if err != nil {
+		t.Fatalf("runAdd error: %v", err)
+	}
+
+	outStr := string(stdout)
+	// Parse pane ID from output (e.g. "(pane %1, total 2 panes now)")
+	re := regexp.MustCompile(`pane\s+(%[0-9]+)`)
+	matches := re.FindStringSubmatch(outStr)
+	if len(matches) < 2 {
+		t.Fatalf("stdout did not contain a created pane ID: %q", outStr)
+	}
+	createdPaneID := matches[1]
+
+	if createdPaneID == initialPaneID {
+		t.Fatalf("printed pane ID %s equals initial pane ID %s, want newly created pane", createdPaneID, initialPaneID)
+	}
+
+	// Verify delivery to the parsed pane ID
+	marker := fmt.Sprintf("DELIVERY_MARKER_%d", time.Now().UnixNano())
+	if err := tmux.SendKeysContext(context.Background(), createdPaneID, marker, true); err != nil {
+		t.Fatalf("send keys to created pane %s: %v", createdPaneID, err)
+	}
+
+	// Wait briefly and capture pane content
+	time.Sleep(100 * time.Millisecond)
+
+	createdContent, err := tmux.CapturePaneOutput(createdPaneID, 50)
+	if err != nil {
+		t.Fatalf("capture created pane %s: %v", createdPaneID, err)
+	}
+	if !strings.Contains(createdContent, marker) {
+		t.Fatalf("created pane %s did not receive marker %q; content = %q", createdPaneID, marker, createdContent)
+	}
+
+	initialContent, err := tmux.CapturePaneOutput(initialPaneID, 50)
+	if err != nil {
+		t.Fatalf("capture initial pane %s: %v", initialPaneID, err)
+	}
+	if strings.Contains(initialContent, marker) {
+		t.Fatalf("initial pane %s unexpectedly received marker %q intended for %s", initialPaneID, marker, createdPaneID)
 	}
 }
