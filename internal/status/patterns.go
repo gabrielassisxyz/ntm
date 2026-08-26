@@ -234,6 +234,23 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		// already ruled out by ClaudeActivelyWorking above.
 	}
 
+	// pi gets the same shape as Claude above, and for a reason that is not
+	// cosmetic: pi is in no generic detection table, so the line scan below
+	// never recognizes its chrome and answers false for a pane sitting at a
+	// healthy prompt. classifyState already reads pi's own predicates and
+	// returns StateIdle, but observationConfidence then downgrades that idle
+	// to 0.5 precisely because this function disagreed — below the 0.75
+	// SafeToDispatch floor, so delivery still timed out on a pane everything
+	// else had already called idle (bd-3nv).
+	if agentType == string(agent.AgentTypePi) {
+		if agent.PiActivelyWorking(output, 0) {
+			return false
+		}
+		if agent.PiIdlePromptShowing(output) {
+			return true
+		}
+	}
+
 	// Strip ANSI first for cleaner processing
 	clean := StripANSI(output)
 

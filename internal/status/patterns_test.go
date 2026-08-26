@@ -397,3 +397,32 @@ func TestDetectIdleFromOutput_MultipleLines(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectIdleFromOutputPi pins pi's arm. pi appears in no generic detection
+// table, so without an arm of its own the line scan answers false for a pane
+// sitting at a healthy prompt. classifyState already reads pi's predicates and
+// returns StateIdle, but observationConfidence downgrades that idle to 0.5 when
+// this function disagrees — under the 0.75 SafeToDispatch floor, which is why a
+// live pi pane still timed out with `state=idle confidence=0.50` (bd-3nv,
+// reproduced 2026-08-26).
+func TestDetectIdleFromOutputPi(t *testing.T) {
+	const chrome = "↑3.3M ↓8.2k 0.0%/1.0M (auto)            (litellm) deepseek-v4-pro-high-k3"
+
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"idle chrome only", "some transcript\n\n" + chrome, true},
+		{"spinner above the chrome", "some transcript\n ⠹ Working...\n" + chrome, false},
+		{"no chrome at all", "still booting\n", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DetectIdleFromOutput(tt.output, "pi"); got != tt.want {
+				t.Errorf("DetectIdleFromOutput(pi) = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

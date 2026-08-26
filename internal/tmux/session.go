@@ -2317,6 +2317,11 @@ const queuedMarkerTailLines = 10
 // pane capture. The composer is bottom-pinned in both Claude Code and
 // codex, so the bottom-most marker line is the live input box even in a
 // capture that includes scrollback.
+//
+// pi is deliberately left on the marker=="" branch (bd-3nv): pi's
+// PiActivelyWorking/PiIdlePromptShowing predicates only distinguish busy
+// from idle, they carry no evidence about text sitting in the composer, so
+// there is nothing to derive MarkerVisible/HoldsText from for pi.
 func InspectComposer(capture string, agentType AgentType) ComposerState {
 	var state ComposerState
 	tailLines := strings.Split(capture, "\n")
@@ -2364,6 +2369,9 @@ const (
 // ready=true with the no-classifier verdict.
 func classifyComposerDeliveryVerdict(agentType AgentType, capture string, captureErr error, paneWidth int) (DeliveryReadinessVerdict, bool, string) {
 	canonical := agentType.Canonical()
+	if canonical == AgentPi {
+		return classifyPiComposerDeliveryVerdict(capture, captureErr, paneWidth)
+	}
 	marker := composerMarkerForAgent(canonical)
 	if marker == "" {
 		return VerdictNoClassifier, true, ""
@@ -2385,6 +2393,26 @@ func classifyComposerDeliveryVerdict(agentType AgentType, capture string, captur
 		}
 	}
 	return VerdictCheckedAndReady, false, fmt.Sprintf("%s composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed", canonical)
+}
+
+// classifyPiComposerDeliveryVerdict is pi's composer-delivery classifier.
+// pi draws no stable composer-line glyph — the composer is blank when idle
+// and holds " ⠹ Working..." when busy (internal/agent/testdata/pi_idle.txt,
+// pi_working.txt) — so classifyComposerDeliveryVerdict cannot reuse the
+// marker-substring check the way it does for Claude and Codex. The one line
+// textually stable across both states is the bottom status chrome
+// (agent.PiIdlePromptShowing), which is a positive idle signal only once
+// agent.PiActivelyWorking has said no (patterns.go:283-286). Together the two
+// predicates give pi the same positive-evidence classifier Claude and Codex
+// get instead of the permanent no-classifier fail-open.
+func classifyPiComposerDeliveryVerdict(capture string, captureErr error, paneWidth int) (DeliveryReadinessVerdict, bool, string) {
+	if captureErr != nil || strings.TrimSpace(capture) == "" {
+		return VerdictNoClassifier, true, ""
+	}
+	if agent.PiActivelyWorking(capture, paneWidth) || agent.PiIdlePromptShowing(capture) {
+		return VerdictCheckedAndReady, true, ""
+	}
+	return VerdictCheckedAndReady, false, "pi composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed"
 }
 
 // ComposerReadyForDelivery reports whether an agent pane is in a state that
@@ -2411,8 +2439,12 @@ func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, ag
 // ready/reason pair. It shares ComposerReadyForDelivery's capture and fail-open
 // behaviour, adding only the verdict classification.
 func (c *Client) composerDeliveryVerdict(ctx context.Context, target string, agentType AgentType, paneWidth int) (DeliveryReadinessVerdict, bool, string) {
-	marker := composerMarkerForAgent(agentType.Canonical())
-	if marker == "" {
+	canonical := agentType.Canonical()
+	// pi has a predicate-based classifier (classifyPiComposerDeliveryVerdict)
+	// rather than a marker glyph, so it must not take the marker=="" shortcut
+	// below — that shortcut would skip the capture entirely and report
+	// no-classifier unconditionally, the exact contradiction bd-3nv fixes.
+	if canonical != AgentPi && composerMarkerForAgent(canonical) == "" {
 		return VerdictNoClassifier, true, ""
 	}
 	capture, err := c.CapturePaneVisibleContext(ctx, target)
@@ -2430,7 +2462,11 @@ func ComposerReadyForDelivery(ctx context.Context, target string, agentType Agen
 // to report which classifier will verify readiness (or that none exists)
 // without adding a capture per pane.
 func ComposerClassifierVerdict(agentType AgentType) DeliveryReadinessVerdict {
-	if composerMarkerForAgent(agentType.Canonical()) == "" {
+	canonical := agentType.Canonical()
+	if canonical == AgentPi {
+		return VerdictCheckedAndReady
+	}
+	if composerMarkerForAgent(canonical) == "" {
 		return VerdictNoClassifier
 	}
 	return VerdictCheckedAndReady
@@ -2441,6 +2477,11 @@ func ComposerClassifierVerdict(agentType AgentType) DeliveryReadinessVerdict {
 // cleared=false only when verification POSITIVELY shows leftover text;
 // verified=false means the sequence was sent but emptiness could not be
 // confirmed (no marker visible / unknown TUI).
+//
+// pi stays on that unverified path (bd-3nv): verifying emptiness needs to
+// read leftover TEXT off the marker's line, and pi's idle/working predicates
+// report only busy-vs-idle, never composer content, so there is no signal
+// here for pi to classify against.
 func (c *Client) ClearComposerContext(ctx context.Context, target string, agentType AgentType) (cleared, verified bool, err error) {
 	for i, key := range ComposerClearKeys(agentType) {
 		if i > 0 {

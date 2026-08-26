@@ -2961,6 +2961,32 @@ func TestComposerLineEmpty_PlaceholderCountsAsEmpty(t *testing.T) {
 	}
 }
 
+// pi captures, read off a live pi 0.84.2 pane (mirrors
+// internal/agent/testdata/pi_idle.txt and pi_working.txt, and the fixtures
+// internal/cli/spawn_state_test.go carries under the same names). The idle
+// capture is a pane waiting at its status line; the working capture is the
+// same pane mid-turn with the braille spinner and "Working..." in the live
+// tail.
+const piIdleAtStatusLineCapture = ` pi v0.84.2
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────
+/home/gabriel/repositories/daytrace
+0.0%/262k (auto)                              (litellm) kimi-k2.7`
+
+const piWorkingCapture = `with its own shell process, working directory, and scrollback history. You can
+split a window horizontally or vertically to create panes.
+
+ ⠴ Working...
+────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────
+/home/gabriel/repositories/daytrace
+↑100k ↓958 13.0%/262k (auto)                  (litellm) kimi-k2.7`
+
 // bd-zz717: the delivery-readiness verdict classifies how readiness was
 // established — positively verified (checked-and-ready) or fail-open
 // (no-classifier). The fail-open contract is asserted, not assumed: unknown
@@ -3010,9 +3036,37 @@ func TestClassifyComposerDeliveryVerdict(t *testing.T) {
 			wantReady:   true,
 		},
 		{
-			name:        "pi absent from marker table",
+			// bd-3nv: pi has no marker glyph, but classifyComposerDeliveryVerdict
+			// special-cases AgentPi into a predicate-based classifier
+			// (classifyPiComposerDeliveryVerdict) rather than falling into the
+			// marker=="" fail-open path other unclassified types take. A capture
+			// holding only the startup banner (no chrome, no spinner) is neither
+			// PiActivelyWorking nor PiIdlePromptShowing, so it is POSITIVELY not
+			// ready — the boot-dialog case the design calls out.
+			name:        "pi startup banner is not yet the composer",
 			agentType:   AgentPi,
 			capture:     " pi v0.84.2\nctrl+c/ctrl+d clear/exit",
+			wantVerdict: VerdictCheckedAndReady,
+			wantReady:   false,
+		},
+		{
+			name:        "pi idle chrome is checked-and-ready",
+			agentType:   AgentPi,
+			capture:     piIdleAtStatusLineCapture,
+			wantVerdict: VerdictCheckedAndReady,
+			wantReady:   true,
+		},
+		{
+			name:        "pi working spinner is checked-and-ready",
+			agentType:   AgentPi,
+			capture:     piWorkingCapture,
+			wantVerdict: VerdictCheckedAndReady,
+			wantReady:   true,
+		},
+		{
+			name:        "pi empty capture fails open to no-classifier",
+			agentType:   AgentPi,
+			capture:     "",
 			wantVerdict: VerdictNoClassifier,
 			wantReady:   true,
 		},
