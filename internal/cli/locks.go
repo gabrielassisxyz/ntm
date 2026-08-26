@@ -473,7 +473,15 @@ Examples:
   ntm locks list myproject --all-agents       # Show all project reservations
   ntm locks list myproject --json             # JSON output for scripts
   ntm locks list myproject --check-deadlocks  # Detect reservation wait-for cycles`,
-		Args: cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("session is required: specify a session name (e.g. 'ntm locks list myproject')")
+			}
+			if len(args) > 1 {
+				return fmt.Errorf("accepts 1 arg(s), received %d", len(args))
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
 			return runLocks(cmd.Context(), session, allAgents, checkDeadlocks)
@@ -923,13 +931,20 @@ func printLocksResult(result LocksResult, allAgents bool) error {
 		return fmt.Errorf("failed to list reservations")
 	}
 
-	scope := "session"
-	if allAgents {
-		scope = "project"
-	}
-
 	if result.Count == 0 {
-		fmt.Printf("No active file reservations (%s scope)\n", scope)
+		if allAgents {
+			if result.Agent != "" {
+				fmt.Printf("No active file reservations across all agents (project scope, queried by %s)\n", result.Agent)
+			} else {
+				fmt.Printf("No active file reservations across all agents (project scope)\n")
+			}
+		} else {
+			if result.Agent != "" {
+				fmt.Printf("No active file reservations for agent %s (single-agent scope)\n", result.Agent)
+			} else {
+				fmt.Printf("No active file reservations (single-agent scope)\n")
+			}
+		}
 		if result.Agent != "" {
 			fmt.Printf("   Agent: %s\n", result.Agent)
 		}
@@ -939,7 +954,19 @@ func printLocksResult(result LocksResult, allAgents bool) error {
 		return nil
 	}
 
-	fmt.Printf("File Reservations: %d active (%s scope)\n", result.Count, scope)
+	if allAgents {
+		if result.Agent != "" {
+			fmt.Printf("File Reservations: %d active across all agents (project scope, queried by %s)\n", result.Count, result.Agent)
+		} else {
+			fmt.Printf("File Reservations: %d active across all agents (project scope)\n", result.Count)
+		}
+	} else {
+		if result.Agent != "" {
+			fmt.Printf("File Reservations: %d active for agent %s (single-agent scope)\n", result.Count, result.Agent)
+		} else {
+			fmt.Printf("File Reservations: %d active (single-agent scope)\n", result.Count)
+		}
+	}
 	fmt.Println(strings.Repeat("-", 60))
 
 	for _, r := range result.Reservations {
