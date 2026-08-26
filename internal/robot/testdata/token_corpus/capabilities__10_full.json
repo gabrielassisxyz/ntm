@@ -193,7 +193,7 @@
       "flag": "--robot-dashboard",
       "category": "state",
       "summary": "Dashboard summary as markdown or JSON.",
-      "description": "Dashboard summary as markdown or JSON.",
+      "description": "Dashboard summary as markdown or JSON. Use --session to scope to one session.",
       "output_formats": [
         "markdown",
         "json"
@@ -209,8 +209,18 @@
         "work",
         "alerts"
       ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        }
+      ],
       "examples": [
-        "ntm --robot-dashboard"
+        "ntm --robot-dashboard",
+        "ntm --robot-dashboard --session=myproject"
       ],
       "transports": [
         {
@@ -1466,7 +1476,7 @@
       "flag": "--robot-status",
       "category": "state",
       "summary": "Get tmux sessions, panes, and agent states.",
-      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
+      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state. Use --session to scope to one session.",
       "output_formats": [
         "json"
       ],
@@ -1479,6 +1489,13 @@
         "sessions"
       ],
       "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        },
         {
           "name": "robot-limit",
           "flag": "--robot-limit",
@@ -1497,7 +1514,8 @@
         }
       ],
       "examples": [
-        "ntm --robot-status"
+        "ntm --robot-status",
+        "ntm --robot-status --session=myproject"
       ],
       "transports": [
         {
@@ -1608,7 +1626,7 @@
       "flag": "--robot-terse",
       "category": "state",
       "summary": "Single-line encoded state for minimal token usage.",
-      "description": "Single-line encoded state for minimal token usage.",
+      "description": "Single-line encoded state for minimal token usage. Use --session to scope to one session.",
       "output_formats": [
         "text"
       ],
@@ -1619,8 +1637,18 @@
         "summary",
         "attention"
       ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        }
+      ],
       "examples": [
-        "ntm --robot-terse"
+        "ntm --robot-terse",
+        "ntm --robot-terse --session=myproject"
       ],
       "transports": [
         {
@@ -7087,7 +7115,7 @@
       "flag": "--robot-dashboard",
       "category": "state",
       "summary": "Dashboard summary as markdown or JSON.",
-      "description": "Dashboard summary as markdown or JSON.",
+      "description": "Dashboard summary as markdown or JSON. Use --session to scope to one session.",
       "output_formats": [
         "markdown",
         "json"
@@ -7105,8 +7133,18 @@
       ],
       "paginated": false,
       "paginated_reason": "bounded: dashboard sections are per-section capped",
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        }
+      ],
       "examples": [
-        "ntm --robot-dashboard"
+        "ntm --robot-dashboard",
+        "ntm --robot-dashboard --session=myproject"
       ],
       "transports": [
         {
@@ -8560,7 +8598,7 @@
       "flag": "--robot-status",
       "category": "state",
       "summary": "Get tmux sessions, panes, and agent states.",
-      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
+      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state. Use --session to scope to one session.",
       "output_formats": [
         "json"
       ],
@@ -8575,6 +8613,13 @@
       "paginated": true,
       "paginated_reason": "sessions array pages via --robot-offset/--limit",
       "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        },
         {
           "name": "robot-limit",
           "flag": "--robot-limit",
@@ -8593,7 +8638,8 @@
         }
       ],
       "examples": [
-        "ntm --robot-status"
+        "ntm --robot-status",
+        "ntm --robot-status --session=myproject"
       ],
       "transports": [
         {
@@ -8728,7 +8774,7 @@
       "flag": "--robot-terse",
       "category": "state",
       "summary": "Single-line encoded state for minimal token usage.",
-      "description": "Single-line encoded state for minimal token usage.",
+      "description": "Single-line encoded state for minimal token usage. Use --session to scope to one session.",
       "output_formats": [
         "text"
       ],
@@ -8739,8 +8785,18 @@
         "summary",
         "attention"
       ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        }
+      ],
       "examples": [
-        "ntm --robot-terse"
+        "ntm --robot-terse",
+        "ntm --robot-terse --session=myproject"
       ],
       "transports": [
         {

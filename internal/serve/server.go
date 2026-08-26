@@ -3419,7 +3419,7 @@ func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotDashboardV1 handles GET /api/v1/robot/dashboard.
 func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetDashboard()
+	output, err := robot.GetDashboard("")
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -3440,7 +3440,7 @@ func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotTerseV1 handles GET /api/v1/robot/terse.
 func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetTerse(nil)
+	output, err := robot.GetTerse(nil, "")
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return

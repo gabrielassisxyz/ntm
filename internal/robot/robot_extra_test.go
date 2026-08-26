@@ -20,7 +20,7 @@ func TestPrintTerse(t *testing.T) {
 	}
 
 	cfg := config.Default()
-	output, err := captureStdout(t, func() error { return PrintTerse(cfg) })
+	output, err := captureStdout(t, func() error { return PrintTerse(cfg, "") })
 	if err != nil {
 		t.Fatalf("PrintTerse failed: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestPrintTerseNoTmux(t *testing.T) {
 	// or rely on PrintTerse behavior in current env.
 
 	cfg := config.Default()
-	output, err := captureStdout(t, func() error { return PrintTerse(cfg) })
+	output, err := captureStdout(t, func() error { return PrintTerse(cfg, "") })
 	if err != nil {
 		t.Fatalf("PrintTerse failed: %v", err)
 	}

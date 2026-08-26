@@ -3164,7 +3164,7 @@ func TestGetDashboardRespectsDisabledAlertsConfig(t *testing.T) {
 		}
 	})
 
-	result, err := GetDashboard()
+	result, err := GetDashboard("")
 	if err != nil {
 		t.Fatalf("GetDashboard: %v", err)
 	}

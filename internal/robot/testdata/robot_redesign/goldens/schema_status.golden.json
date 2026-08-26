@@ -1116,7 +1116,7 @@
         "type": "object"
       }
     },
-    "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
+    "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state. Use --session to scope to one session.",
     "properties": {
       "_agent_hints": {
         "$ref": "#/definitions/AgentHints",
