@@ -3100,9 +3100,15 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated numeric pane indices", "robot-rano-stats")
 				return
 			}
+			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotRanoStatsSession(cmd))
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-rano-stats")
+				return
+			}
 			opts := robot.RanoStatsOptions{
-				Panes:  panes,
-				Window: robotRanoWindow,
+				Panes:   panes,
+				Window:  robotRanoWindow,
+				Session: session,
 			}
 			if err := robot.PrintRanoStats(opts); err != nil {
 				recordRobotProcessExit(err)
@@ -4814,7 +4820,7 @@ func init() {
 	// prefixed session flags. The deprecation hints below point at
 	// --session, so it must actually be registered on this command surface
 	// (ntm#214: the hint previously suggested a flag that didn't exist).
-	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, --robot-palette, --robot-snapshot, --robot-status, --robot-dashboard, --robot-terse, --robot-events, --robot-attention, --robot-digest, --robot-overlay, --robot-markdown, --robot-dismiss-alert, and --robot-mail (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
+	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, --robot-palette, --robot-snapshot, --robot-status, --robot-dashboard, --robot-terse, --robot-events, --robot-attention, --robot-digest, --robot-overlay, --robot-markdown, --robot-dismiss-alert, --robot-rano-stats, and --robot-mail (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
 
 	// --no-wait for interrupt
 	rootCmd.Flags().BoolVar(&robotInterruptNoWait, "no-wait", false, "Return immediately without waiting")
@@ -5429,6 +5435,10 @@ func resolveRobotPaletteSession(cmd *cobra.Command) string {
 }
 
 func resolveRobotSnapshotSession(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
+}
+
+func resolveRobotRanoStatsSession(cmd *cobra.Command) string {
 	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
 }
 

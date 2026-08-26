@@ -2018,11 +2018,13 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Get per-agent network stats via rano.",
 			Parameters: []RobotParameter{
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane indices to filter (applies across sessions)"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Session name to scope stats to (panes of that session only)"},
 				{Name: "rano-window", Flag: "--rano-window", Type: "duration", Required: false, Default: "5m", Description: "Time window for stats (e.g., 5m, 1h)"},
 			},
 			Examples: []string{
 				"ntm --robot-rano-stats",
 				"ntm --robot-rano-stats --panes=2,3 --rano-window=10m",
+				"ntm --robot-rano-stats --session=proj",
 			},
 		},
 		{
