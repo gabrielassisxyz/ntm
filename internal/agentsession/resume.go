@@ -16,7 +16,7 @@ const antigravityModel = "Gemini 3.1 Pro (High)"
 // when available, and falls back to the agent's native `--resume <id>` flag.
 //
 //	provider   casr/native provider name ("claude", "codex", "gemini",
-//	           "antigravity")
+//	           "antigravity", "pi")
 //	sessionID  the captured provider session id
 //	preferCASR when true (and casr is on PATH), use casr; otherwise native.
 //
@@ -45,8 +45,8 @@ func ResumeCommand(provider, sessionID string, preferCASR bool) string {
 		case "gemini":
 			return "casr -gmi " + shellQuote(sessionID)
 		}
-		// Antigravity has no casr short-flag; fall through to its native
-		// resume command below.
+		// Antigravity and pi have no casr short-flag; fall through to their
+		// native resume commands below.
 	}
 
 	// Native fallback: each agent CLI accepts a resume-by-id flag.
@@ -61,20 +61,24 @@ func ResumeCommand(provider, sessionID string, preferCASR bool) string {
 		// agy resumes a conversation by id and REQUIRES the model pinned.
 		return "agy --conversation " + shellQuote(sessionID) +
 			" --model " + shellQuote(antigravityModel)
+	case "pi":
+		return "pi --session " + shellQuote(sessionID)
 	}
 	return ""
 }
 
 // ResumeLatestCommand builds the command that resumes the most-recent
 // conversation for a provider without a captured id (e.g. when discovery found
-// no specific session but a pane should still pick up where it left off). Only
-// the Antigravity CLI exposes a first-class "resume latest" entry point
-// (`agy --continue`); for other providers there is no id-less resume, so this
-// returns "".
+// no specific session but a pane should still pick up where it left off).
+// Antigravity (`agy --continue`) and pi (`pi --continue`) expose a first-class
+// "resume latest" entry point; for other providers there is no id-less resume,
+// so this returns "".
 func ResumeLatestCommand(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "antigravity":
 		return "agy --continue --model " + shellQuote(antigravityModel)
+	case "pi":
+		return "pi --continue"
 	default:
 		return ""
 	}
