@@ -443,3 +443,286 @@ func TestLocksCheckResult_HeldStatePopulatesHolder(t *testing.T) {
 func jsonMarshalIndent(v interface{}) ([]byte, error) {
 	return jsonEncodeIndent(v)
 }
+
+func TestLocksList_NoSessionArg_PrintsRequiredAndExample(t *testing.T) {
+	t.Parallel()
+	cmd := newLocksListCmd()
+	err := cmd.Args(cmd, []string{})
+	if err == nil {
+		t.Fatal("expected error when no session is provided, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "session is required") {
+		t.Fatalf("error missing 'session is required': got %q", msg)
+	}
+	if !strings.Contains(msg, "ntm locks list myproject") {
+		t.Fatalf("error missing example 'ntm locks list myproject': got %q", msg)
+	}
+	if strings.Contains(msg, "accepts 1 arg(s), received 0") {
+		t.Fatalf("error should not be bare arity error: got %q", msg)
+	}
+}
+
+func TestLocksList_OutputFormatting_FourCases(t *testing.T) {
+	now := time.Now().UTC()
+	future := agentmail.FlexTime{Time: now.Add(45 * time.Minute)}
+	resAmber := agentmail.FileReservation{
+		ID:          1,
+		PathPattern: "src/auth.go",
+		AgentName:   "AmberCove",
+		Exclusive:   true,
+		Reason:      "auth refactor",
+		CreatedTS:   agentmail.FlexTime{Time: now.Add(-15 * time.Minute)},
+		ExpiresTS:   future,
+	}
+	resGray := agentmail.FileReservation{
+		ID:          2,
+		PathPattern: "src/domain/mod.rs",
+		AgentName:   "GrayCompass",
+		Exclusive:   true,
+		Reason:      "domain models",
+		CreatedTS:   agentmail.FlexTime{Time: now.Add(-10 * time.Minute)},
+		ExpiresTS:   future,
+	}
+
+	t.Run("case1_nothing_held_anywhere", func(t *testing.T) {
+		res := LocksResult{
+			Success:    true,
+			Session:    "myproject",
+			Agent:      "AmberCove",
+			ProjectKey: "/home/gabriel/repositories/repo",
+			Count:      0,
+		}
+
+		// Single-agent scope
+		outSingle := captureLocksStdout(t, func() error {
+			return printLocksResult(res, false)
+		})
+		firstLineSingle := strings.TrimSpace(strings.Split(outSingle, "\n")[0])
+		wantSingleHeader := "No active file reservations for agent AmberCove (single-agent scope)"
+		if firstLineSingle != wantSingleHeader {
+			t.Fatalf("single-agent count line = %q, want %q", firstLineSingle, wantSingleHeader)
+		}
+		if !strings.Contains(outSingle, "Agent: AmberCove") || !strings.Contains(outSingle, "Project: /home/gabriel/repositories/repo") {
+			t.Fatalf("single-agent output missing context:\n%s", outSingle)
+		}
+		if strings.Contains(outSingle, "session scope") {
+			t.Fatalf("single-agent output contains ambiguous 'session scope':\n%s", outSingle)
+		}
+		if strings.Contains(outSingle, "project scope") || strings.Contains(outSingle, "across all agents") {
+			t.Fatalf("single-agent output contains all-agents wording:\n%s", outSingle)
+		}
+
+		// All-agents scope
+		outAll := captureLocksStdout(t, func() error {
+			return printLocksResult(res, true)
+		})
+		firstLineAll := strings.TrimSpace(strings.Split(outAll, "\n")[0])
+		wantAllHeader := "No active file reservations across all agents (project scope, queried by AmberCove)"
+		if firstLineAll != wantAllHeader {
+			t.Fatalf("all-agents count line = %q, want %q", firstLineAll, wantAllHeader)
+		}
+		if !strings.Contains(outAll, "Agent: AmberCove") || !strings.Contains(outAll, "Project: /home/gabriel/repositories/repo") {
+			t.Fatalf("all-agents output missing context:\n%s", outAll)
+		}
+		if strings.Contains(outAll, "single-agent scope") || strings.Contains(outAll, "session scope") {
+			t.Fatalf("all-agents output contains single-agent/session wording:\n%s", outAll)
+		}
+	})
+
+	t.Run("case2_querier_holds_reservation", func(t *testing.T) {
+		// Single-agent scope
+		resSingle := LocksResult{
+			Success:      true,
+			Session:      "myproject",
+			Agent:        "AmberCove",
+			ProjectKey:   "/home/gabriel/repositories/repo",
+			Reservations: []agentmail.FileReservation{resAmber},
+			Count:        1,
+		}
+		outSingle := captureLocksStdout(t, func() error {
+			return printLocksResult(resSingle, false)
+		})
+		firstLineSingle := strings.TrimSpace(strings.Split(outSingle, "\n")[0])
+		wantSingleHeader := "File Reservations: 1 active for agent AmberCove (single-agent scope)"
+		if firstLineSingle != wantSingleHeader {
+			t.Fatalf("single-agent count line = %q, want %q", firstLineSingle, wantSingleHeader)
+		}
+		if !strings.Contains(outSingle, "[#1] src/auth.go") || !strings.Contains(outSingle, "Agent: AmberCove") {
+			t.Fatalf("single-agent output missing AmberCove reservation:\n%s", outSingle)
+		}
+		if strings.Contains(outSingle, "project scope") || strings.Contains(outSingle, "across all agents") {
+			t.Fatalf("single-agent output contains all-agents wording:\n%s", outSingle)
+		}
+
+		// All-agents scope
+		resAll := LocksResult{
+			Success:      true,
+			Session:      "myproject",
+			Agent:        "AmberCove",
+			ProjectKey:   "/home/gabriel/repositories/repo",
+			Reservations: []agentmail.FileReservation{resAmber},
+			Count:        1,
+		}
+		outAll := captureLocksStdout(t, func() error {
+			return printLocksResult(resAll, true)
+		})
+		firstLineAll := strings.TrimSpace(strings.Split(outAll, "\n")[0])
+		wantAllHeader := "File Reservations: 1 active across all agents (project scope, queried by AmberCove)"
+		if firstLineAll != wantAllHeader {
+			t.Fatalf("all-agents count line = %q, want %q", firstLineAll, wantAllHeader)
+		}
+		if !strings.Contains(outAll, "[#1] src/auth.go") || !strings.Contains(outAll, "Agent: AmberCove") {
+			t.Fatalf("all-agents output missing AmberCove reservation:\n%s", outAll)
+		}
+		if strings.Contains(outAll, "single-agent scope") {
+			t.Fatalf("all-agents output contains single-agent wording:\n%s", outAll)
+		}
+	})
+
+	t.Run("case3_other_agent_holds_reservation", func(t *testing.T) {
+		// Single-agent scope (querier AmberCove has 0)
+		resSingle := LocksResult{
+			Success:    true,
+			Session:    "myproject",
+			Agent:      "AmberCove",
+			ProjectKey: "/home/gabriel/repositories/repo",
+			Count:      0,
+		}
+		outSingle := captureLocksStdout(t, func() error {
+			return printLocksResult(resSingle, false)
+		})
+		firstLineSingle := strings.TrimSpace(strings.Split(outSingle, "\n")[0])
+		wantSingleHeader := "No active file reservations for agent AmberCove (single-agent scope)"
+		if firstLineSingle != wantSingleHeader {
+			t.Fatalf("single-agent count line = %q, want %q", firstLineSingle, wantSingleHeader)
+		}
+		if strings.Contains(outSingle, "GrayCompass") {
+			t.Fatalf("single-agent output must not list other agent:\n%s", outSingle)
+		}
+
+		// All-agents scope (GrayCompass holds 1)
+		resAll := LocksResult{
+			Success:      true,
+			Session:      "myproject",
+			Agent:        "AmberCove",
+			ProjectKey:   "/home/gabriel/repositories/repo",
+			Reservations: []agentmail.FileReservation{resGray},
+			Count:        1,
+		}
+		outAll := captureLocksStdout(t, func() error {
+			return printLocksResult(resAll, true)
+		})
+		firstLineAll := strings.TrimSpace(strings.Split(outAll, "\n")[0])
+		wantAllHeader := "File Reservations: 1 active across all agents (project scope, queried by AmberCove)"
+		if firstLineAll != wantAllHeader {
+			t.Fatalf("all-agents count line = %q, want %q", firstLineAll, wantAllHeader)
+		}
+		if !strings.Contains(outAll, "[#2] src/domain/mod.rs") || !strings.Contains(outAll, "Agent: GrayCompass") {
+			t.Fatalf("all-agents output missing GrayCompass reservation:\n%s", outAll)
+		}
+	})
+
+	t.Run("case4_both_agents_hold_reservations", func(t *testing.T) {
+		// Single-agent scope (AmberCove queried, has 1)
+		resSingle := LocksResult{
+			Success:      true,
+			Session:      "myproject",
+			Agent:        "AmberCove",
+			ProjectKey:   "/home/gabriel/repositories/repo",
+			Reservations: []agentmail.FileReservation{resAmber},
+			Count:        1,
+		}
+		outSingle := captureLocksStdout(t, func() error {
+			return printLocksResult(resSingle, false)
+		})
+		firstLineSingle := strings.TrimSpace(strings.Split(outSingle, "\n")[0])
+		wantSingleHeader := "File Reservations: 1 active for agent AmberCove (single-agent scope)"
+		if firstLineSingle != wantSingleHeader {
+			t.Fatalf("single-agent count line = %q, want %q", firstLineSingle, wantSingleHeader)
+		}
+		if !strings.Contains(outSingle, "[#1] src/auth.go") || !strings.Contains(outSingle, "Agent: AmberCove") {
+			t.Fatalf("single-agent output missing AmberCove reservation:\n%s", outSingle)
+		}
+		if strings.Contains(outSingle, "GrayCompass") {
+			t.Fatalf("single-agent output must not contain GrayCompass:\n%s", outSingle)
+		}
+
+		// All-agents scope (both AmberCove and GrayCompass queried, 2 total)
+		resAll := LocksResult{
+			Success:      true,
+			Session:      "myproject",
+			Agent:        "AmberCove",
+			ProjectKey:   "/home/gabriel/repositories/repo",
+			Reservations: []agentmail.FileReservation{resAmber, resGray},
+			Count:        2,
+		}
+		outAll := captureLocksStdout(t, func() error {
+			return printLocksResult(resAll, true)
+		})
+		firstLineAll := strings.TrimSpace(strings.Split(outAll, "\n")[0])
+		wantAllHeader := "File Reservations: 2 active across all agents (project scope, queried by AmberCove)"
+		if firstLineAll != wantAllHeader {
+			t.Fatalf("all-agents count line = %q, want %q", firstLineAll, wantAllHeader)
+		}
+		if !strings.Contains(outAll, "[#1] src/auth.go") || !strings.Contains(outAll, "Agent: AmberCove") {
+			t.Fatalf("all-agents output missing AmberCove reservation:\n%s", outAll)
+		}
+		if !strings.Contains(outAll, "[#2] src/domain/mod.rs") || !strings.Contains(outAll, "Agent: GrayCompass") {
+			t.Fatalf("all-agents output missing GrayCompass reservation:\n%s", outAll)
+		}
+	})
+}
+
+func TestLocksList_Regression_ReproductionAmbiguousOutputNotProducible(t *testing.T) {
+	res := LocksResult{
+		Success:    true,
+		Session:    "myproject",
+		Agent:      "AmberCove",
+		ProjectKey: "/home/gabriel/repositories/repo",
+		Count:      0,
+	}
+	outSingle := captureLocksStdout(t, func() error {
+		return printLocksResult(res, false)
+	})
+	if strings.Contains(outSingle, "No active file reservations (session scope)") {
+		t.Fatalf("single-agent output reproduced ambiguous output:\n%s", outSingle)
+	}
+
+	outAll := captureLocksStdout(t, func() error {
+		return printLocksResult(res, true)
+	})
+	if strings.Contains(outAll, "No active file reservations (session scope)") {
+		t.Fatalf("all-agents output reproduced ambiguous output:\n%s", outAll)
+	}
+}
+
+func TestLocksList_ContextPreserved(t *testing.T) {
+	res := LocksResult{
+		Success:    true,
+		Session:    "test-session",
+		Agent:      "GreenCastle",
+		ProjectKey: "/path/to/stale/dir",
+		Count:      0,
+	}
+
+	outSingle := captureLocksStdout(t, func() error {
+		return printLocksResult(res, false)
+	})
+	if !strings.Contains(outSingle, "Agent: GreenCastle") {
+		t.Fatalf("single-agent output must preserve Agent identity:\n%s", outSingle)
+	}
+	if !strings.Contains(outSingle, "Project: /path/to/stale/dir") {
+		t.Fatalf("single-agent output must preserve Project path:\n%s", outSingle)
+	}
+
+	outAll := captureLocksStdout(t, func() error {
+		return printLocksResult(res, true)
+	})
+	if !strings.Contains(outAll, "Agent: GreenCastle") {
+		t.Fatalf("all-agents output must preserve Agent identity:\n%s", outAll)
+	}
+	if !strings.Contains(outAll, "Project: /path/to/stale/dir") {
+		t.Fatalf("all-agents output must preserve Project path:\n%s", outAll)
+	}
+}
