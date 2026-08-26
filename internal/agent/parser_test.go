@@ -1941,3 +1941,31 @@ func equalStringSets(a, b []string) bool {
 	}
 	return true
 }
+
+// TestPiIdlePromptShowingWindowUnits pins the units pi draws in its status
+// line. The window size is not always in k: a million-token model draws
+// "0.0%/1.0M (auto)". A pattern that accepts only k matched nothing on such a
+// pane, which classified it StateUnknown at confidence 0.25 and made every
+// spawn delivery to it time out at a healthy prompt (bd-3nv, reproduced live
+// 2026-08-26 against deepseek-v4-pro-high through litellm).
+func TestPiIdlePromptShowingWindowUnits(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"k window", "↑3.3M ↓8.2k 43.0%/262k (auto)                (litellm) kimi-k2.7", true},
+		{"M window with a decimal", "0.0%/1.0M (auto)                              (litellm) deepseek-v4-pro-high-k3", true},
+		{"M window without a decimal", "12.5%/2M (auto)", true},
+		{"no unit at all", "12.5%/262 (auto)", false},
+		{"not the chrome line", "some transcript text mentioning 42% of the budget", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PiIdlePromptShowing(tt.line); got != tt.want {
+				t.Errorf("PiIdlePromptShowing(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}

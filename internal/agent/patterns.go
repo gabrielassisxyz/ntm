@@ -284,7 +284,12 @@ var (
 	// PERMANENT CHROME: it is drawn while pi works as well as while it waits.
 	// It is a positive idle signal only when combined with !PiActivelyWorking —
 	// the trap the removed "bypass permissions on" ccIdlePattern fell into.
-	piPromptChromeRe = regexp.MustCompile(`(?m)\d+(?:\.\d+)?%/\d+k\s+\(auto\)`)
+	//
+	// The window size carries pi's own unit, and it is not always k: a
+	// million-token model draws "0.0%/1.0M (auto)". Hardcoding k made every
+	// such pane match nothing, so it classified as StateUnknown at confidence
+	// 0.25 and every spawn delivery to it timed out (bd-3nv).
+	piPromptChromeRe = regexp.MustCompile(`(?m)\d+(?:\.\d+)?%/\d+(?:\.\d+)?[kKmMgG]\s+\(auto\)`)
 
 	piWorkingPatterns = []string{
 		"working...",
