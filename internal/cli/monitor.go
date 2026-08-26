@@ -164,10 +164,11 @@ func runMonitor(session string) error {
 		defer archiver.Close()
 	}
 
-	// Poll for session existence periodically to exit if session is killed.
+	// Poll for session existence periodically to exit if session is killed or pane set vanished.
 	// Use consecutive-miss counting to tolerate transient tmux failures.
-	const maxMisses = 5 // ~25 seconds at 5s interval before giving up
-	ticker := time.NewTicker(5 * time.Second)
+	const maxMisses = 3 // ~3 seconds at 1s interval before giving up
+	const maxPaneMisses = 3
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	// Snapshot output periodically to generate summary on exit
@@ -178,6 +179,7 @@ func runMonitor(session string) error {
 	fmt.Printf("Monitoring session '%s' for resilience...\n", session)
 
 	missCount := 0
+	paneMissCount := 0
 	for {
 		select {
 		case <-sigChan:
@@ -231,6 +233,52 @@ func runMonitor(session string) error {
 			if missCount > 0 {
 				fmt.Printf("Session '%s' recovered after %d miss(es)\n", session, missCount)
 				missCount = 0
+			}
+
+			// Check if monitored pane set has vanished while session exists
+			if len(manifest.Agents) > 0 {
+				panes, err := tmux.GetPanes(session)
+				if err == nil {
+					healthPaneMap := make(map[string]bool, len(panes))
+					for _, p := range panes {
+						healthPaneMap[p.ID] = true
+					}
+					var foundCount int
+					for _, ag := range manifest.Agents {
+						if healthPaneMap[ag.PaneID] {
+							foundCount++
+						}
+					}
+					if foundCount == 0 {
+						paneMissCount++
+						if paneMissCount >= maxPaneMisses {
+							fmt.Printf("Session '%s' monitored pane set vanished (%d consecutive checks), stopping monitor\n", session, paneMissCount)
+							events.DefaultEmitter().Emit(events.NewWebhookEvent(
+								events.WebhookSessionEnded,
+								session,
+								"",
+								"",
+								fmt.Sprintf("Session %s monitored pane set vanished", session),
+								map[string]string{
+									"project_dir": manifest.ProjectDir,
+								},
+							))
+							monitor.Stop()
+							func() {
+								defer func() {
+									if r := recover(); r != nil {
+										fmt.Fprintf(os.Stderr, "Panic in session summary generation: %v\n", r)
+									}
+								}()
+								generateEndSessionSummary(session, lastOutputs, manifest)
+							}()
+							_ = resilience.DeleteManifest(session)
+							return nil
+						}
+					} else {
+						paneMissCount = 0
+					}
+				}
 			}
 		case <-snapshotTicker.C:
 			captureSessionOutputs(session, lastOutputs)

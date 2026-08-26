@@ -3413,6 +3413,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	switch {
 	case monitorErr == nil:
 		if !IsJSONOutput() && monitorResult != nil {
+			if monitorResult.ExistingMonitorStopped {
+				output.PrintInfof("Stopped existing session monitor for '%s'", opts.Session)
+			}
 			if monitorResult.Manifest != nil && monitorResult.Manifest.AutoRestart {
 				output.PrintInfof("Session monitor started (auto-restart enabled, pid: %d)", monitorResult.MonitorPID)
 			} else {

@@ -411,6 +411,7 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
+	var sendKeysCalled bool
 	setHooksLocked(func() {
 		// Return empty agents list - pane doesn't exist
 		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
@@ -421,7 +422,10 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 		}
 
 		sleepFn = func(d time.Duration) {}
-		sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			sendKeysCalled = true
+			return nil
+		}
 		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
 			return agentCmd, nil
 		}
@@ -437,16 +441,129 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 
 	m.checkHealth(context.Background())
 
-	// Give async restart goroutine time to run
+	// Give async restart goroutine time to run if any
 	time.Sleep(50 * time.Millisecond)
 
 	m.mu.RLock()
 	restartCount := m.agents["pane-1"].RestartCount
 	m.mu.RUnlock()
 
-	// When pane is missing, it triggers a crash which triggers a restart
-	if restartCount != 1 {
-		t.Errorf("expected restart count 1 when pane missing, got %d", restartCount)
+	// When pane is missing (vanished pane set), it should NOT trigger a crash restart attempt
+	if restartCount != 0 {
+		t.Errorf("expected restart count 0 when pane missing, got %d", restartCount)
+	}
+	if sendKeysCalled {
+		t.Error("sendKeys should not be called for non-existent pane")
+	}
+}
+
+func TestCheckHealthVanishedPaneSetDoesNotAlarm(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var sendKeysCalled bool
+	setHooksLocked(func() {
+		// Return unrelated panes (session was recreated or only has other panes)
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "other-pane-99",
+						Status:        health.StatusOK,
+						ProcessStatus: health.ProcessRunning,
+					},
+				},
+			}, nil
+		}
+
+		sleepFn = func(d time.Duration) {}
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			sendKeysCalled = true
+			return nil
+		}
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = true
+	cfg.Resilience.MaxRestarts = 3
+	cfg.Resilience.RestartDelaySeconds = 0
+
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m.RegisterAgent("pane-1", 1, 0, "cc", "opus", "claude")
+	m.RegisterAgent("pane-2", 2, 0, "cod", "gpt-4", "codex")
+
+	m.checkHealth(context.Background())
+
+	time.Sleep(50 * time.Millisecond)
+
+	if m.GetRestartCount("pane-1") != 0 || m.GetRestartCount("pane-2") != 0 {
+		t.Errorf("vanished pane set must not trigger restarts: pane-1=%d, pane-2=%d",
+			m.GetRestartCount("pane-1"), m.GetRestartCount("pane-2"))
+	}
+	if sendKeysCalled {
+		t.Error("sendKeys must not be called when monitored pane set vanished")
+	}
+}
+
+func TestCheckHealthPartialMissingPaneDoesNotRestart(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var sendKeysCalled bool
+	setHooksLocked(func() {
+		// pane-1 exists and is healthy, pane-2 is missing from session
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "pane-1",
+						Status:        health.StatusOK,
+						ProcessStatus: health.ProcessRunning,
+					},
+				},
+			}, nil
+		}
+
+		sleepFn = func(d time.Duration) {}
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			sendKeysCalled = true
+			return nil
+		}
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = true
+	cfg.Resilience.MaxRestarts = 3
+	cfg.Resilience.RestartDelaySeconds = 0
+
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m.RegisterAgent("pane-1", 1, 0, "cc", "opus", "claude")
+	m.RegisterAgent("pane-2", 2, 0, "cod", "gpt-4", "codex")
+
+	m.checkHealth(context.Background())
+
+	time.Sleep(50 * time.Millisecond)
+
+	m.mu.RLock()
+	agent2Healthy := m.agents["pane-2"].Healthy
+	m.mu.RUnlock()
+
+	if agent2Healthy {
+		t.Error("missing pane-2 should be marked unhealthy")
+	}
+	if m.GetRestartCount("pane-2") != 0 {
+		t.Errorf("missing pane-2 must not trigger restart (got %d)", m.GetRestartCount("pane-2"))
+	}
+	if sendKeysCalled {
+		t.Error("sendKeys must not be called for missing pane")
 	}
 }
 
