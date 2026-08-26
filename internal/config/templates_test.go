@@ -560,6 +560,64 @@ func TestTemplateFunctions(t *testing.T) {
 // on the model and lost the effort in silence. An operator who fixed their
 // template for the model still got the default reasoning budget — the swarm's
 // cost and quality changed with nothing to notice.
+func TestGenerateAgentCommandAccount(t *testing.T) {
+	// The claude-account wrapper shape the shipped config documents (bd-jyy):
+	// a per-pane account through {{.Account}}, falling back to the template's
+	// default when the mechanism is omitted.
+	template := `claude-account {{shellQuote (.Account | default "bianca")}}{{if .Model}} --model {{shellQuote .Model}}{{end}}`
+
+	t.Run("account named per pane reaches the command", func(t *testing.T) {
+		got, err := GenerateAgentCommand(template, AgentTemplateVars{Account: "gmail", Model: "sonnet"})
+		if err != nil {
+			t.Fatalf("GenerateAgentCommand: %v", err)
+		}
+		want := "claude-account 'gmail' --model 'sonnet'"
+		if got != want {
+			t.Fatalf("rendered = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("omitting the account keeps the template default", func(t *testing.T) {
+		got, err := GenerateAgentCommand(template, AgentTemplateVars{})
+		if err != nil {
+			t.Fatalf("GenerateAgentCommand: %v", err)
+		}
+		want := "claude-account 'bianca'"
+		if got != want {
+			t.Fatalf("rendered = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("hardcoded command rejects an account override", func(t *testing.T) {
+		_, err := GenerateAgentCommand(
+			`claude-account bianca --dangerously-skip-permissions`,
+			AgentTemplateVars{AgentType: "cc", Account: "gmail"},
+		)
+		if err == nil {
+			t.Fatal("account override against a hardcoded command was accepted; it would be silently ignored")
+		}
+		if !strings.Contains(err.Error(), "Account") {
+			t.Fatalf("error = %v, want it to name the missing placeholder", err)
+		}
+	})
+
+	t.Run("templated command without the placeholder is rejected", func(t *testing.T) {
+		_, err := GenerateAgentCommand(
+			`claude-account bianca --model {{shellQuote .Model}}`,
+			AgentTemplateVars{AgentType: "cc", Account: "gmail"},
+		)
+		if err == nil {
+			t.Fatal("account override against a template lacking .Account was accepted")
+		}
+	})
+
+	t.Run("no account requested is always fine", func(t *testing.T) {
+		if _, err := GenerateAgentCommand(`claude-account bianca`, AgentTemplateVars{AgentType: "cc"}); err != nil {
+			t.Fatalf("unexpected error with no account override: %v", err)
+		}
+	})
+}
+
 func TestGenerateAgentCommandGuardsDroppedReasoningEffort(t *testing.T) {
 	t.Run("hardcoded command rejects an effort override", func(t *testing.T) {
 		_, err := GenerateAgentCommand(

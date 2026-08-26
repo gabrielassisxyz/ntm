@@ -110,6 +110,108 @@ func TestSpawnPaneEnvExpansionAndValidation(t *testing.T) {
 	}
 }
 
+// documentedClaudeAccountTemplate is the `[agents] claude` launch template the
+// shipped config documents for per-pane accounts (bd-jyy). The regression
+// test below renders THIS exact shape, and the comment + example in
+// ~/.config/ntm/config.toml must stay in step with it: if one changes without
+// the other, the documented mechanism and the pinned mechanism diverge and
+// one of the two tests in this function fails.
+const documentedClaudeAccountTemplate = `claude-account {{shellQuote (.Account | default "bianca")}}{{if .Model}} --model {{shellQuote .Model}}{{end}} --effort {{shellQuote (.ReasoningEffort | default "high")}}{{if .SystemPromptFile}} --system-prompt-file {{shellQuote .SystemPromptFile}}{{end}}`
+
+// TestSpawnPaneAccountComposition pins how a per-pane account reaches the pane
+// command line (bd-jyy). The account travels as a template variable rendered
+// into the command, NOT through the --pane-env shell-assignment prefix: in
+// `KEY='value' claude-account ${CLAUDE_ACCOUNT:-bianca}` the shell expands
+// ${CLAUDE_ACCOUNT:-bianca} before the assignment takes effect, so the pane
+// always sees the default. The config comment documents the template-variable
+// route; the sub-tests pin that the --pane-env route cannot work, so a
+// suggestion in the same shape never gets written again.
+func TestSpawnAccountComposition(t *testing.T) {
+	t.Run("template variable renders the account into the command", func(t *testing.T) {
+		cmd, err := config.GenerateAgentCommand(documentedClaudeAccountTemplate, config.AgentTemplateVars{
+			Model:           "sonnet",
+			ModelRequested:  true,
+			Account:         "gmail",
+			ReasoningEffort: "high",
+		})
+		if err != nil {
+			t.Fatalf("GenerateAgentCommand: %v", err)
+		}
+		if want := `claude-account 'gmail' --model 'sonnet' --effort 'high'`; cmd != want {
+			t.Fatalf("composed command = %q, want %q", cmd, want)
+		}
+	})
+
+	t.Run("omitting the account keeps the template default exactly", func(t *testing.T) {
+		cmd, err := config.GenerateAgentCommand(documentedClaudeAccountTemplate, config.AgentTemplateVars{})
+		if err != nil {
+			t.Fatalf("GenerateAgentCommand: %v", err)
+		}
+		if want := `claude-account 'bianca' --effort 'high'`; cmd != want {
+			t.Fatalf("composed command = %q, want %q", cmd, want)
+		}
+	})
+
+	// The old config suggestion said to leave the template generic and pass
+	// the account per pane as `--pane-env CLAUDE_ACCOUNT=...`. That cannot
+	// work: the template's ${CLAUDE_ACCOUNT:-bianca} is expanded by the shell
+	// BEFORE the KEY='value' prefix assignment applies, so the default always
+	// wins. This sub-test proves the composed shape still behaves that way,
+	// so the suggestion stays gone.
+	t.Run("pane-env prefix cannot deliver a template ${VAR:-default} (bd-jyy)", func(t *testing.T) {
+		composed := prependSpawnPaneEnv("printf '%s' ${CLAUDE_ACCOUNT:-bianca}", map[string]string{"CLAUDE_ACCOUNT": "gmail"})
+		want := "CLAUDE_ACCOUNT='gmail' printf '%s' ${CLAUDE_ACCOUNT:-bianca}"
+		if composed != want {
+			t.Fatalf("composed command = %q, want %q", composed, want)
+		}
+		sh, err := exec.LookPath("sh")
+		if err != nil {
+			t.Skip("sh not available")
+		}
+		out, err := exec.Command(sh, "-c", composed).Output()
+		if err != nil {
+			t.Fatalf("running composed command: %v", err)
+		}
+		if got := strings.TrimSpace(string(out)); got != "bianca" {
+			t.Fatalf("shell resolved ${CLAUDE_ACCOUNT:-bianca} to %q, want %q (the assignment prefix cannot reach the expansion)", got, "bianca")
+		}
+	})
+
+	t.Run("documented two-account example composes distinct commands", func(t *testing.T) {
+		// The exact example documented in the shipped config.toml:
+		//   ntm spawn llmux --cc 1:sonnet::gmail --cc 1:sonnet:primary
+		// renders two distinct claude-account commands; the pane of each
+		// carries its own account as an argument.
+		specs := AgentSpecs{}
+		for _, raw := range []string{"1:sonnet::gmail", "1:sonnet::primary"} {
+			spec, err := ParseAgentSpec(raw)
+			if err != nil {
+				t.Fatalf("ParseAgentSpec(%q): %v", raw, err)
+			}
+			specs = append(specs, spec)
+		}
+		var accounts []string
+		for _, spec := range specs.Flatten() {
+			cmd, err := config.GenerateAgentCommand(documentedClaudeAccountTemplate, config.AgentTemplateVars{
+				Model:           spec.Model,
+				ModelRequested:  spec.Model != "",
+				ReasoningEffort: "high",
+				Account:         spec.Account,
+			})
+			if err != nil {
+				t.Fatalf("GenerateAgentCommand for %+v: %v", spec, err)
+			}
+			accounts = append(accounts, cmd)
+		}
+		if len(accounts) != 2 {
+			t.Fatalf("flattened specs = %d, want 2", len(accounts))
+		}
+		if !strings.Contains(accounts[0], "'gmail'") || !strings.Contains(accounts[1], "'primary'") {
+			t.Fatalf("composed commands = %q, want one gmail pane and one primary pane", accounts)
+		}
+	})
+}
+
 func TestPreflightWorktreeProject(t *testing.T) {
 	t.Run("nil context", func(t *testing.T) {
 		err := preflightWorktreeProject(nil, t.TempDir())

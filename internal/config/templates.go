@@ -32,6 +32,11 @@ type AgentTemplateVars struct {
 	// model_reasoning_effort=...`). Empty falls back to the
 	// template-level default. See ntm#140.
 	ReasoningEffort string
+	// Account names a per-pane account for launch wrappers that pin one
+	// credential per process (claude-account's shallow profiles). Set via
+	// the optional fourth spec field (`--cc N:model:effort:account`).
+	// Empty falls back to the template-level default account. See bd-jyy.
+	Account string
 }
 
 // ShellQuote safely quotes a string for use in shell commands.
@@ -327,10 +332,16 @@ func personaDropError(agentType, tmpl string) error {
 // Returns an error if template parsing or execution fails.
 func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
 	// Fast path: if no template syntax, return as-is unless an explicit model,
-	// effort, or persona system prompt would be silently dropped.
+	// account, effort, or persona system prompt would be silently dropped.
 	if !strings.Contains(tmpl, "{{") {
 		if strings.TrimSpace(vars.SystemPromptFile) != "" {
 			return "", personaDropError(vars.AgentType, tmpl)
+		}
+		if strings.TrimSpace(vars.Account) != "" {
+			return "", fmt.Errorf(
+				"account %q was specified but agent command has no template syntax (no {{.Account}} placeholder); "+
+					"the account would be silently ignored. Convert the command to template format or remove the account override. "+
+					"Command: %s", vars.Account, tmpl)
 		}
 		if !vars.ModelRequested && (strings.TrimSpace(vars.ReasoningEffort) == "" || !agentTypeConsumesReasoningEffort(vars.AgentType)) {
 			return tmpl, nil
@@ -394,6 +405,19 @@ func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
 	if strings.TrimSpace(vars.SystemPromptFile) != "" &&
 		!templateReferencesAnyField(t, "SystemPromptFile") {
 		return "", personaDropError(vars.AgentType, tmpl)
+	}
+
+	// And the same guard for per-pane accounts. A template that never
+	// references .Account cannot deliver an account passed through
+	// `--cc N:model:effort:account` — the pane would run on the shared
+	// default and nobody would notice, which is precisely the silent drop
+	// bd-jyy exists to remove.
+	if strings.TrimSpace(vars.Account) != "" &&
+		!templateReferencesAnyField(t, "Account") {
+		return "", fmt.Errorf(
+			"account %q was specified but agent command template does not reference .Account; "+
+				"the account would be silently ignored. Update the template or remove the account override. "+
+				"Command: %s", vars.Account, tmpl)
 	}
 
 	var buf bytes.Buffer

@@ -75,6 +75,62 @@ func TestParseAgentSpec_ReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestParseAgentSpec_Account(t *testing.T) {
+	tests := []struct {
+		value       string
+		wantCount   int
+		wantModel   string
+		wantEffort  string
+		wantAccount string
+		expectError bool
+	}{
+		// No account field: behavior is exactly as before.
+		{"1", 1, "", "", "", false},
+		{"2:gpt-5", 2, "gpt-5", "", "", false},
+		{"1:gpt-5:medium", 1, "gpt-5", "medium", "", false},
+		// Fourth colon field names the account.
+		{"1:gpt-5:medium:gmail", 1, "gpt-5", "medium", "gmail", false},
+		{"3:opus:xhigh:primary", 3, "opus", "xhigh", "primary", false},
+		// Effort may be omitted when an account is present.
+		{"1:opus::gmail", 1, "opus", "", "gmail", false},
+		// @effort shorthand composes with an empty effort segment.
+		{"1:opus@high::gmail", 1, "opus", "high", "gmail", false},
+		// The @effort shorthand plus a non-empty effort segment is still rejected.
+		{"1:opus@high:medium:gmail", 1, "", "", "", true},
+		// Errors: empty account, bad charset, trailing colons, too many fields.
+		{"1:opus:high::", 1, "", "", "", true},
+		{"1:opus::bad account", 1, "", "", "", true},
+		{"1:opus::$(pwn)", 1, "", "", "", true},
+		{"1:opus::gmail:extra", 1, "", "", "", true},
+		{"1:gpt-5:", 1, "", "", "", true}, // empty effort, no account: still rejected
+		{"1::gmail", 1, "", "", "", true}, // empty model
+	}
+	for _, tt := range tests {
+		spec, err := ParseAgentSpec(tt.value)
+		if tt.expectError {
+			if err == nil {
+				t.Errorf("ParseAgentSpec(%q) expected error, got spec=%+v", tt.value, spec)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("ParseAgentSpec(%q) unexpected error: %v", tt.value, err)
+		}
+		if spec.Count != tt.wantCount {
+			t.Errorf("%q: count=%d want %d", tt.value, spec.Count, tt.wantCount)
+		}
+		if spec.Model != tt.wantModel {
+			t.Errorf("%q: model=%q want %q", tt.value, spec.Model, tt.wantModel)
+		}
+		if spec.ReasoningEffort != tt.wantEffort {
+			t.Errorf("%q: effort=%q want %q", tt.value, spec.ReasoningEffort, tt.wantEffort)
+		}
+		if spec.Account != tt.wantAccount {
+			t.Errorf("%q: account=%q want %q", tt.value, spec.Account, tt.wantAccount)
+		}
+	}
+}
+
 // =============================================================================
 // TotalCount
 // =============================================================================
@@ -567,6 +623,8 @@ func TestAgentSpecs_String(t *testing.T) {
 		{"count only", AgentSpecs{{Count: 3}}, "3"},
 		{"with model", AgentSpecs{{Count: 2, Model: "opus"}}, "2:opus"},
 		{"multiple", AgentSpecs{{Count: 1}, {Count: 3, Model: "fast"}}, "1,3:fast"},
+		{"with account", AgentSpecs{{Count: 1, Model: "opus", Account: "gmail"}}, "1:opus::gmail"},
+		{"with effort and account", AgentSpecs{{Count: 1, Model: "opus", ReasoningEffort: "high", Account: "gmail"}}, "1:opus:high:gmail"},
 	}
 
 	for _, tc := range tests {
@@ -593,8 +651,8 @@ func TestAgentSpecsValue_SetWithType(t *testing.T) {
 	var specs AgentSpecs
 	v := NewAgentSpecsValue(AgentTypeClaude, &specs)
 
-	if v.Type() != "N[:model[:effort]]" {
-		t.Errorf("Type() = %q, want N[:model[:effort]]", v.Type())
+	if v.Type() != "N[:model[:effort[:account]]]" {
+		t.Errorf("Type() = %q, want N[:model[:effort[:account]]]", v.Type())
 	}
 
 	err := v.Set("2:opus")

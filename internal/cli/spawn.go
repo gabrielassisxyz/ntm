@@ -866,6 +866,7 @@ func validateSpawnAgentCommands(opts SpawnOptions, ollamaHost string) error {
 			AgentType:        string(agent.Type),
 			ReasoningEffort:  reasoningEffort,
 			SystemPromptFile: systemPromptPlaceholder,
+			Account:          agent.Account,
 		}); err != nil {
 			return fmt.Errorf("agent command preflight for %s agent %d: %w", agent.Type, agent.Index, err)
 		}
@@ -2062,8 +2063,8 @@ Examples:
 	}
 
 	// Use custom flag values that accumulate specs with type info
-	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeClaude, &agentSpecs), "cc", "Claude agents (N, N:model, N:model:effort, or N:model@effort)")
-	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCodex, &agentSpecs), "cod", "Codex agents (N, N:model, N:model:effort, or N:model@effort)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeClaude, &agentSpecs), "cc", "Claude agents (N, N:model, N:model:effort, N:model:effort:account, N:model::account, or N:model@effort)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCodex, &agentSpecs), "cod", "Codex agents (N, N:model, N:model:effort, N:model:effort:account, N:model::account, or N:model@effort)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGemini, &agentSpecs), "gmi", "Gemini agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAntigravity, &agentSpecs), "agy", "Antigravity (agy) agents (N; model is pinned to Gemini 3.1 Pro (High))")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGrok, &agentSpecs), "grok", "Grok Build agents (N, N:model, N:model:effort, or N:model@effort)")
@@ -3097,6 +3098,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			SystemPromptFile: systemPromptFile,
 			PersonaName:      personaName,
 			ReasoningEffort:  resolvedReasoningEffort,
+			Account:          agent.Account,
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))

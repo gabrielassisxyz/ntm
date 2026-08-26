@@ -60,12 +60,18 @@ type AgentSpec struct {
 	Type  AgentType
 	Count int
 	Model string // Optional, empty = use default model
-	// ReasoningEffort is the model reasoning-budget hint (Codex's
+	// ReasoningEffort is the model's reasoning-budget hint (Codex's
 	// `-c model_reasoning_effort=...` knob and any future
 	// equivalents). Empty = template default. Set via the third
 	// colon-separated field in the spec (`N:model:effort`) or
 	// from per-persona configuration. See ntm#140.
 	ReasoningEffort string
+	// Account is a per-spec account name for launch wrappers that pin
+	// one credential per process (claude-account's shallow profiles).
+	// Empty = template default. Set via the optional fourth
+	// colon-separated field (`N:model:effort:account`; the effort may be
+	// omitted when an account is present, `N:model::account`). See bd-jyy.
+	Account string
 }
 
 // AgentSpecs is a slice of AgentSpec that implements the flag.Value interface
@@ -80,6 +86,10 @@ func (s *AgentSpecs) String() string {
 	var parts []string
 	for _, spec := range *s {
 		switch {
+		case spec.Model != "" && spec.ReasoningEffort != "" && spec.Account != "":
+			parts = append(parts, fmt.Sprintf("%d:%s:%s:%s", spec.Count, spec.Model, spec.ReasoningEffort, spec.Account))
+		case spec.Model != "" && spec.Account != "":
+			parts = append(parts, fmt.Sprintf("%d:%s::%s", spec.Count, spec.Model, spec.Account))
 		case spec.Model != "" && spec.ReasoningEffort != "":
 			parts = append(parts, fmt.Sprintf("%d:%s:%s", spec.Count, spec.Model, spec.ReasoningEffort))
 		case spec.Model != "":
@@ -103,7 +113,7 @@ func (s *AgentSpecs) Set(value string) error {
 
 // Type returns the type name for pflag
 func (s *AgentSpecs) Type() string {
-	return "N[:model[:effort]]"
+	return "N[:model[:effort[:account]]]"
 }
 
 // agentTypeSupportsEffortSuffix reports whether an agent type has a
@@ -121,10 +131,13 @@ func agentTypeSupportsEffortSuffix(agentType AgentType) bool {
 }
 
 // ParseAgentSpec parses a single agent specification string.
-// Format: "N", "N:model", "N:model:effort", or "N:model@effort" where N is
-// count, model is an optional alias, and effort is a reasoning-effort hint
-// passed through to the agent template (currently consumed by Codex's
-// `model_reasoning_effort` knob — see ntm#140, ntm-mjf7).
+// Format: "N", "N:model", "N:model:effort", "N:model@effort", or
+// "N:model:effort:account" where N is count, model is an optional alias,
+// effort is a reasoning-effort hint passed through to the agent template
+// (currently consumed by Codex's `model_reasoning_effort` knob — see ntm#140,
+// ntm-mjf7), and account is an optional per-pane account name (claude-account
+// shallow profile; the effort field may be left empty when account is given,
+// `N:model::account`).
 func ParseAgentSpec(value string) (AgentSpec, error) {
 	return parseAgentSpec(value, false, true)
 }
@@ -145,7 +158,7 @@ func parseAgentSpec(value string, relaxedModel bool, effortAtSuffix bool) (Agent
 		allowedDesc = "letters, numbers, spaces, parentheses, . _ / @ : + -"
 	}
 
-	parts := strings.SplitN(value, ":", 3)
+	parts := strings.SplitN(value, ":", 4)
 	if len(parts) == 0 || parts[0] == "" {
 		return spec, fmt.Errorf("invalid agent spec: %q", value)
 	}
@@ -166,7 +179,8 @@ func parseAgentSpec(value string, relaxedModel bool, effortAtSuffix bool) (Agent
 		}
 		// `model@effort` is shorthand for `model:effort` (ntm-mjf7): the
 		// suffix after the last '@' is the reasoning-effort hint. Combining
-		// both forms (`N:model@effort:effort`) is ambiguous and rejected.
+		// both forms (`N:model@effort:effort`) is ambiguous and rejected;
+		// `N:model@effort::account` (empty effort segment + account) is fine.
 		if at := strings.LastIndex(model, "@"); effortAtSuffix && at >= 0 {
 			effort := strings.TrimSpace(model[at+1:])
 			model = strings.TrimSpace(model[:at])
@@ -176,7 +190,7 @@ func parseAgentSpec(value string, relaxedModel bool, effortAtSuffix bool) (Agent
 			if effort == "" {
 				return spec, fmt.Errorf("empty reasoning effort after '@' in agent spec: %q (use N:model or N:model@effort)", value)
 			}
-			if len(parts) > 2 {
+			if len(parts) > 2 && strings.TrimSpace(parts[2]) != "" {
 				return spec, fmt.Errorf("agent spec %q sets reasoning effort twice (both '@%s' and ':%s'); use one form", value, effort, strings.TrimSpace(parts[2]))
 			}
 			if !effortPattern.MatchString(effort) {
@@ -193,12 +207,34 @@ func parseAgentSpec(value string, relaxedModel bool, effortAtSuffix bool) (Agent
 	if len(parts) > 2 {
 		effort := strings.TrimSpace(parts[2])
 		if effort == "" {
-			return spec, fmt.Errorf("empty reasoning effort in agent spec: %q", value)
+			if len(parts) > 3 {
+				// N:model::account — effort omitted, account present.
+				effort = ""
+			} else {
+				return spec, fmt.Errorf("empty reasoning effort in agent spec: %q", value)
+			}
 		}
-		if !effortPattern.MatchString(effort) {
-			return spec, fmt.Errorf("invalid characters in reasoning effort %q; allowed: letters, numbers, . _ + -", effort)
+		if effort != "" {
+			if !effortPattern.MatchString(effort) {
+				return spec, fmt.Errorf("invalid characters in reasoning effort %q; allowed: letters, numbers, . _ + -", effort)
+			}
+			spec.ReasoningEffort = effort
 		}
-		spec.ReasoningEffort = effort
+	}
+
+	if len(parts) > 3 {
+		account := strings.TrimSpace(parts[3])
+		if account == "" {
+			return spec, fmt.Errorf("empty account in agent spec: %q (use N:model:effort:account or N:model::account)", value)
+		}
+		// Account names share the effort charset (letters, numbers, . _ + -),
+		// which is injection-safe: the account is only ever inserted into a
+		// launch command through shellQuote, and the charset admits no
+		// metacharacters.
+		if !effortPattern.MatchString(account) {
+			return spec, fmt.Errorf("invalid characters in account %q; allowed: letters, numbers, . _ + -", account)
+		}
+		spec.Account = account
 	}
 
 	return spec, nil
@@ -230,6 +266,10 @@ type FlatAgent struct {
 	Index           int    // 1-based index within type
 	Model           string // Resolved model (may be empty for default)
 	ReasoningEffort string // Reasoning-effort hint (Codex `model_reasoning_effort`)
+	// Account is the per-pane account name (claude-account profile), carried
+	// from the spec's optional fourth field (bd-jyy). Empty = template
+	// default.
+	Account string
 	// Persona is non-nil when this agent was produced by expanding a
 	// --profile-set / --profiles persona list (ntm#149). When set, Type
 	// already reflects the persona's own agent_type and the spawn loop uses
@@ -251,6 +291,7 @@ func (s AgentSpecs) Flatten() []FlatAgent {
 				Index:           indices[spec.Type],
 				Model:           spec.Model,
 				ReasoningEffort: spec.ReasoningEffort,
+				Account:         spec.Account,
 			})
 		}
 	}
@@ -383,5 +424,5 @@ func (v *agentSpecsValue) Set(value string) error {
 }
 
 func (v *agentSpecsValue) Type() string {
-	return "N[:model[:effort]]"
+	return "N[:model[:effort[:account]]]"
 }
