@@ -1054,11 +1054,56 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		})
 	}
 
-	fmt.Printf("✓ Added %d agent(s) (total %d panes now)\n", totalAgents, len(panes)+totalAgents)
+	fmt.Println(formatAddAgentSummary(len(panes)+totalAgents, newPanes))
 
 	// Show "What's next?" suggestions
 	output.SuccessFooter(output.AddSuggestions(session, totalAgents)...)
 	return nil
+}
+
+// formatAddAgentSummary formats the human-readable summary for added agent panes.
+// For a single added agent, it prints:
+//
+//	✓ Added 1 agent(s) (pane %NN, total M panes now)
+//
+// For multiple added agents, it prints:
+//
+//	✓ Added N agent(s) (total M panes now)
+//	  pane %NN (agent_1)
+//	  pane %MM (agent_2)
+func formatAddAgentSummary(totalPanes int, addedPanes []output.PaneResponse) string {
+	if len(addedPanes) == 1 {
+		paneID := strings.TrimSpace(addedPanes[0].PaneID)
+		if paneID != "" {
+			return fmt.Sprintf("✓ Added 1 agent(s) (pane %s, total %d panes now)", paneID, totalPanes)
+		}
+		return fmt.Sprintf("✓ Added 1 agent(s) (total %d panes now)", totalPanes)
+	}
+
+	if len(addedPanes) == 0 {
+		return fmt.Sprintf("✓ Added 0 agent(s) (total %d panes now)", totalPanes)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "✓ Added %d agent(s) (total %d panes now)", len(addedPanes), totalPanes)
+	for _, p := range addedPanes {
+		label := tmux.PaneTitleSuffix(p.Title)
+		if label == "" {
+			label = strings.TrimSpace(p.Title)
+		}
+		if label == "" {
+			label = strings.TrimSpace(p.Type)
+		}
+		paneID := strings.TrimSpace(p.PaneID)
+		if paneID != "" && label != "" {
+			fmt.Fprintf(&b, "\n  pane %s (%s)", paneID, label)
+		} else if paneID != "" {
+			fmt.Fprintf(&b, "\n  pane %s", paneID)
+		} else if label != "" {
+			fmt.Fprintf(&b, "\n  %s", label)
+		}
+	}
+	return b.String()
 }
 
 func resolveAddSession(ctx context.Context, session string) (string, error) {
