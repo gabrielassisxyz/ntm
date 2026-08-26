@@ -634,7 +634,7 @@ func TestResolveMailAgentIdentityUsesCurrentPaneRegistryIdentity(t *testing.T) {
 	cfg = &config.Config{ProjectsBase: projectsBase}
 	t.Cleanup(func() { cfg = oldCfg })
 
-	session := "mailpaneidentity"
+	session := "mailpaneidentity_" + time.Now().Format("150405")
 	_ = tmux.KillSession(session)
 	if err := tmux.CreateSession(session, projectKey); err != nil {
 		t.Fatalf("CreateSession(%q): %v", session, err)
@@ -1548,7 +1548,7 @@ func TestResolveAgentMailScopeWithPreferenceNormalizesExplicitPrefix(t *testing.
 	testutil.RequireTmuxThrottled(t)
 	isolateSessionAgentStorage(t)
 
-	fullSession := "mailscopeprefixsession"
+	fullSession := "mailscopeprefixsession_" + time.Now().Format("150405")
 	prefix := "mailscopeprefix"
 	projectsBase := canonicalTempDir(t)
 	projectKey := filepath.Join(projectsBase, fullSession)

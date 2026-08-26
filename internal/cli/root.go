@@ -783,6 +783,12 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Pagination values must be zero or greater", "robot-status")
 				return
 			}
+			resolved, resolveErr := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotSnapshotSession(cmd))
+			if resolveErr != nil {
+				failRobotCommand(resolveErr, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-status")
+				return
+			}
+			pagination.Session = resolved
 			if err := robot.PrintStatusWithOptions(pagination); err != nil {
 				recordRobotProcessExit(err)
 			}
@@ -1036,7 +1042,12 @@ Shell Integration:
 			return
 		}
 		if robotDashboard {
-			if err := robot.PrintDashboard(jsonOutput); err != nil {
+			resolved, resolveErr := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotSnapshotSession(cmd))
+			if resolveErr != nil {
+				failRobotCommand(resolveErr, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-dashboard")
+				return
+			}
+			if err := robot.PrintDashboard(jsonOutput, resolved); err != nil {
 				recordRobotProcessExit(err)
 			}
 			return
@@ -2560,7 +2571,12 @@ Shell Integration:
 			return
 		}
 		if robotTerse {
-			if err := robot.PrintTerse(cfg); err != nil {
+			resolved, resolveErr := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotSnapshotSession(cmd))
+			if resolveErr != nil {
+				failRobotCommand(resolveErr, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-terse")
+				return
+			}
+			if err := robot.PrintTerse(cfg, resolved); err != nil {
 				recordRobotProcessExit(err)
 			}
 			return
@@ -4140,7 +4156,7 @@ func init() {
 
 	// Robot flags for AI agents - state inspection commands
 	rootCmd.Flags().BoolVar(&robotHelp, "robot-help", false, "Show comprehensive human-readable AI agent integration guide with examples")
-	rootCmd.Flags().BoolVar(&robotStatus, "robot-status", false, "Get tmux sessions, panes, agent states. Start here. Example: ntm --robot-status")
+	rootCmd.Flags().BoolVar(&robotStatus, "robot-status", false, "Get tmux sessions, panes, agent states. Start here. Use --session to scope to one session. Example: ntm --robot-status")
 	rootCmd.Flags().BoolVar(&robotVersion, "robot-version", false, "Get ntm version, commit, build info (JSON). Example: ntm --robot-version")
 	rootCmd.Flags().BoolVar(&robotCapabilities, "robot-capabilities", false, "Get all available robot commands with parameters and descriptions (JSON). Machine-discoverable API")
 	rootCmd.Flags().StringVar(&robotCapabilitiesCommand, "capability-command", "", "Filter --robot-capabilities to one exact command name or flag")
@@ -4210,7 +4226,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotGraph, "robot-graph", false, "Get bv dependency graph insights: PageRank, critical path, cycles (JSON)")
 	rootCmd.Flags().BoolVar(&robotTriage, "robot-triage", false, "Get bv triage analysis with recommendations, quick wins, blockers (JSON). Example: ntm --robot-triage --triage-limit=20")
 	rootCmd.Flags().IntVar(&robotTriageLimit, "triage-limit", 10, "Max recommendations per category. Optional with --robot-triage. Example: --triage-limit=20")
-	rootCmd.Flags().BoolVar(&robotDashboard, "robot-dashboard", false, "Get dashboard summary as markdown (or JSON with --json). Token-efficient overview")
+	rootCmd.Flags().BoolVar(&robotDashboard, "robot-dashboard", false, "Get dashboard summary as markdown (or JSON with --json). Use --session to scope to one session. Token-efficient overview")
 	rootCmd.Flags().StringVar(&robotContext, "robot-context", "", "Get context window usage for all agents in a session. Required: SESSION. Example: ntm --robot-context=myproject")
 	rootCmd.Flags().BoolVar(&robotEnsembleModesList, "robot-ensemble-modes", false, "List reasoning modes (JSON). Optional: --tier, --category, --limit, --offset")
 	rootCmd.Flags().BoolVar(&robotEnsemblePresetsList, "robot-ensemble-presets", false, "List ensemble presets (JSON). Example: ntm --robot-ensemble-presets")
@@ -4406,7 +4422,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotProbeAggressive, "probe-aggressive", false, "Fallback to interrupt_test if keystroke_echo fails (used with --robot-probe)")
 
 	// Robot-terse flag for ultra-compact output
-	rootCmd.Flags().BoolVar(&robotTerse, "robot-terse", false, "Single-line state: S:session|A:active/total|W:working|I:idle|E:errors|B:beads|M:mail|^:attention|!:alerts. Minimal tokens")
+	rootCmd.Flags().BoolVar(&robotTerse, "robot-terse", false, "Single-line state: S:session|A:active/total|W:working|I:idle|E:errors|B:beads|M:mail|^:attention|!:alerts. Use --session to scope to one session. Minimal tokens")
 
 	// Robot-format flag for output serialization format
 	rootCmd.Flags().StringVar(&robotFormat, "robot-format", "", "Output format for robot commands: json (default), toon (~39% fewer tokens than JSON, measured by TestTokenCorpus_TOONFloor), or auto. Env: NTM_ROBOT_FORMAT, NTM_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT")
@@ -4804,7 +4820,7 @@ func init() {
 	// prefixed session flags. The deprecation hints below point at
 	// --session, so it must actually be registered on this command surface
 	// (ntm#214: the hint previously suggested a flag that didn't exist).
-	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, --robot-palette, --robot-snapshot, --robot-events, --robot-attention, --robot-digest, --robot-overlay, --robot-markdown, --robot-dismiss-alert, --robot-rano-stats, and --robot-mail (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
+	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, --robot-palette, --robot-snapshot, --robot-status, --robot-dashboard, --robot-terse, --robot-events, --robot-attention, --robot-digest, --robot-overlay, --robot-markdown, --robot-dismiss-alert, --robot-rano-stats, and --robot-mail (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
 
 	// --no-wait for interrupt
 	rootCmd.Flags().BoolVar(&robotInterruptNoWait, "no-wait", false, "Return immediately without waiting")

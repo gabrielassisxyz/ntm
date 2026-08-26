@@ -1145,7 +1145,7 @@ func TestSpawnOptions_NoAgentsSpecified(t *testing.T) {
 func TestSpawnOptions_SafetyMode(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
-	sessionName := "test_safety_mode_spawn"
+	sessionName := "test_safety_mode_spawn_" + time.Now().Format("150405")
 
 	// Create session first
 	if err := tmux.CreateSession(sessionName, "/tmp"); err != nil {
@@ -1185,7 +1185,7 @@ func TestSpawnOptions_SafetyMode(t *testing.T) {
 func TestSpawnOptions_MultipleAgentTypes(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
-	sessionName := "test_multi_agent_spawn"
+	sessionName := "test_multi_agent_spawn_" + time.Now().Format("150405")
 	defer tmux.KillSession(sessionName)
 
 	opts := SpawnOptions{

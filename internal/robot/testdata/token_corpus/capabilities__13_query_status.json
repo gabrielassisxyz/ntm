@@ -81,7 +81,7 @@
       "flag": "--robot-status",
       "category": "state",
       "summary": "Get tmux sessions, panes, and agent states.",
-      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
+      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state. Use --session to scope to one session.",
       "output_formats": [
         "json"
       ],
@@ -94,6 +94,13 @@
         "sessions"
       ],
       "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        },
         {
           "name": "robot-limit",
           "flag": "--robot-limit",
@@ -112,7 +119,8 @@
         }
       ],
       "examples": [
-        "ntm --robot-status"
+        "ntm --robot-status",
+        "ntm --robot-status --session=myproject"
       ],
       "transports": [
         {
@@ -959,7 +967,7 @@
       "flag": "--robot-status",
       "category": "state",
       "summary": "Get tmux sessions, panes, and agent states.",
-      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
+      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state. Use --session to scope to one session.",
       "output_formats": [
         "json"
       ],
@@ -974,6 +982,13 @@
       "paginated": true,
       "paginated_reason": "sessions array pages via --robot-offset/--limit",
       "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        },
         {
           "name": "robot-limit",
           "flag": "--robot-limit",
@@ -992,7 +1007,8 @@
         }
       ],
       "examples": [
-        "ntm --robot-status"
+        "ntm --robot-status",
+        "ntm --robot-status --session=myproject"
       ],
       "transports": [
         {

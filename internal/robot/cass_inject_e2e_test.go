@@ -145,7 +145,7 @@ func TestGetSendWithCASSDeliversInjectedContextRealTmux(t *testing.T) {
 	query, filter, inject := stubCassConfigs(stub)
 
 	const baseMarker = "NTM_CASS_BASE_MSG"
-	session := "ntm-send-cass-inject"
+	session := "ntm-send-cass-inject_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(session, ""); err != nil {
 		t.Fatalf("create tmux session: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestGetSendWithCASSDegradedStillSendsRealTmux(t *testing.T) {
 	query, filter, inject := stubCassConfigs(filepath.Join(t.TempDir(), "no-such-cass"))
 
 	const baseMarker = "NTM_CASS_DEGRADED_MSG"
-	session := "ntm-send-cass-degraded"
+	session := "ntm-send-cass-degraded_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(session, ""); err != nil {
 		t.Fatalf("create tmux session: %v", err)
 	}

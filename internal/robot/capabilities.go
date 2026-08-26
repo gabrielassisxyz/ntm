@@ -361,12 +361,13 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "status",
 			Flag:        "--robot-status",
 			Category:    "state",
-			Description: "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
+			Description: "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state. Use --session to scope to one session.",
 			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Scope to one session"},
 				{Name: "robot-limit", Flag: "--robot-limit", Type: "int", Required: false, Default: "0", Description: "Max sessions to return (alias: --limit)"},
 				{Name: "robot-offset", Flag: "--robot-offset", Type: "int", Required: false, Default: "0", Description: "Pagination offset for sessions (alias: --offset)"},
 			},
-			Examples: []string{"ntm --robot-status"},
+			Examples: []string{"ntm --robot-status", "ntm --robot-status --session=myproject"},
 		},
 		{
 			Name:        "context",
@@ -731,17 +732,21 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "dashboard",
 			Flag:        "--robot-dashboard",
 			Category:    "state",
-			Description: "Dashboard summary as markdown or JSON.",
-			Parameters:  []RobotParameter{},
-			Examples:    []string{"ntm --robot-dashboard"},
+			Description: "Dashboard summary as markdown or JSON. Use --session to scope to one session.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Scope to one session"},
+			},
+			Examples: []string{"ntm --robot-dashboard", "ntm --robot-dashboard --session=myproject"},
 		},
 		{
 			Name:        "terse",
 			Flag:        "--robot-terse",
 			Category:    "state",
-			Description: "Single-line encoded state for minimal token usage.",
-			Parameters:  []RobotParameter{},
-			Examples:    []string{"ntm --robot-terse"},
+			Description: "Single-line encoded state for minimal token usage. Use --session to scope to one session.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Scope to one session"},
+			},
+			Examples: []string{"ntm --robot-terse", "ntm --robot-terse --session=myproject"},
 		},
 		{
 			Name:        "markdown",
