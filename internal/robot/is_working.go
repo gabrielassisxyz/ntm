@@ -235,6 +235,8 @@ func workIndicatorBasis(
 			return "claude_live_spinner"
 		case agent.AgentTypeCodex:
 			return "codex_live_working_indicator"
+		case agent.AgentTypePi:
+			return "pi_live_spinner"
 		default:
 			return "live_window_thinking"
 		}
@@ -251,6 +253,8 @@ func workIndicatorBasis(
 			return "claude_finished_turn_prompt"
 		case agent.AgentTypeCodex:
 			return "codex_composer_placeholder"
+		case agent.AgentTypePi:
+			return "pi_status_line_idle"
 		default:
 			return "idle_prompt"
 		}
