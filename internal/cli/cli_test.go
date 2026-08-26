@@ -895,7 +895,7 @@ func TestResolveMessageScopeInfersLabeledSessionFromCurrentProject(t *testing.T)
 	cfg = &config.Config{ProjectsBase: projectsBase}
 	t.Cleanup(func() { cfg = oldCfg })
 
-	fullSession := "messageproject--frontend"
+	fullSession := "messageproject--frontend_" + time.Now().Format("150405")
 	_ = tmux.KillSession(fullSession)
 	if err := tmux.CreateSession(fullSession, projectDir); err != nil {
 		t.Fatalf("CreateSession(%q): %v", fullSession, err)
@@ -1033,7 +1033,7 @@ func TestResolveMessageScopeUsesCurrentPaneRegistryIdentity(t *testing.T) {
 	}
 	defer os.Chdir(oldWd)
 
-	session := "messagepaneidentity"
+	session := "messagepaneidentity_" + time.Now().Format("150405")
 	_ = tmux.KillSession(session)
 	if err := tmux.CreateSession(session, projectDir); err != nil {
 		t.Fatalf("CreateSession(%q): %v", session, err)
@@ -1248,7 +1248,7 @@ func TestResolveRobotSessionProjectScopeNormalizesExplicitPrefix(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
 	projectsBase := canonicalTempDir(t)
-	fullSession := "robotrootsession"
+	fullSession := "robotrootsession_" + time.Now().Format("150405")
 	projectDir := filepath.Join(projectsBase, fullSession)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir project: %v", err)
@@ -1325,7 +1325,7 @@ func TestResolveRobotSessionProjectScopeRejectsInvalidSessionName(t *testing.T) 
 func TestResolveRobotLiveSessionNormalizesExplicitPrefix(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
-	fullSession := "robotlivesession"
+	fullSession := "robotlivesession_" + time.Now().Format("150405")
 	projectDir := t.TempDir()
 
 	oldJSON := jsonOutput
@@ -1442,7 +1442,7 @@ func TestResolveRobotOfflineCapableSessionRejectsInvalidSessionName(t *testing.T
 func TestResolveRobotSessionFilterNormalizesExplicitPrefix(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
-	fullSession := "robotfiltersession"
+	fullSession := "robotfiltersession_" + time.Now().Format("150405")
 	projectDir := t.TempDir()
 
 	oldJSON := jsonOutput
@@ -1562,7 +1562,7 @@ func TestResolveWorktreeScopeInfersLabeledSessionFromCurrentProject(t *testing.T
 	cfg = &config.Config{ProjectsBase: projectsBase}
 	t.Cleanup(func() { cfg = oldCfg })
 
-	fullSession := "scopeproject--frontend"
+	fullSession := "scopeproject--frontend_" + time.Now().Format("150405")
 	_ = tmux.KillSession(fullSession)
 	if err := tmux.CreateSession(fullSession, projectDir); err != nil {
 		t.Fatalf("CreateSession(%q): %v", fullSession, err)
@@ -1685,7 +1685,7 @@ func TestResolveContextBuildScopeInfersLabeledSessionFromCurrentProject(t *testi
 	cfg = &config.Config{ProjectsBase: projectsBase}
 	t.Cleanup(func() { cfg = oldCfg })
 
-	fullSession := "contextscope--frontend"
+	fullSession := "contextscope--frontend_" + time.Now().Format("150405")
 	_ = tmux.KillSession(fullSession)
 	if err := tmux.CreateSession(fullSession, projectDir); err != nil {
 		t.Fatalf("CreateSession(%q): %v", fullSession, err)
@@ -2795,7 +2795,7 @@ func TestResolveCheckpointStorageSessionArgResolvesOfflinePrefixMatch(t *testing
 func TestResolveRollbackSessionsNormalizesExplicitPrefix(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
-	fullSession := "rollbackprefixsession"
+	fullSession := "rollbackprefixsession_" + time.Now().Format("150405")
 	prefix := "rollbackprefix"
 	workDir := t.TempDir()
 	_ = tmux.KillSession(fullSession)
