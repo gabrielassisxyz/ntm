@@ -1841,3 +1841,103 @@ func TestCodexActivelyWorkingUsesOnlyStructuralLiveTailMarkers(t *testing.T) {
 		})
 	}
 }
+
+// TestParser_PiStateGoldenCaptures asserts the working/idle verdict for pi in
+// BOTH directions from captures taken off real panes, because pi's chrome is
+// identical in the two states: pi_working.txt contains the same bottom status
+// line as pi_idle.txt, so a detector that reads the chrome alone reports both
+// as idle. Asserting only the idle direction would pass against exactly that
+// broken detector, which is why the working row is not optional here.
+func TestParser_PiStateGoldenCaptures(t *testing.T) {
+	tests := []struct {
+		name          string
+		file          string
+		wantWorking   bool
+		wantIdle      bool
+		wantIndicator string
+	}{
+		{"idle at status line", "pi_idle.txt", false, true, ""},
+		{"mid-turn spinner above the chrome", "pi_working.txt", true, false, "pi_live_spinner"},
+	}
+
+	p := NewParser()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := loadTestData(t, tt.file)
+
+			// The premise of the test: both captures draw the idle chrome.
+			if !PiIdlePromptShowing(output) {
+				t.Fatalf("%s no longer contains pi's status line; the fixture stopped testing what it was captured for", tt.file)
+			}
+
+			state, err := p.ParseWithHint(output, AgentTypePi)
+			if err != nil {
+				t.Fatalf("ParseWithHint(%s) error: %v", tt.file, err)
+			}
+			if state.Type != AgentTypePi {
+				t.Errorf("Type = %v, want %v", state.Type, AgentTypePi)
+			}
+			if state.IsWorking != tt.wantWorking {
+				t.Errorf("IsWorking = %v, want %v", state.IsWorking, tt.wantWorking)
+			}
+			if state.IsIdle != tt.wantIdle {
+				t.Errorf("IsIdle = %v, want %v", state.IsIdle, tt.wantIdle)
+			}
+			if state.IsInError {
+				t.Errorf("IsInError = true, want false (neither capture holds an error)")
+			}
+			if tt.wantIndicator != "" {
+				found := false
+				for _, ind := range state.WorkIndicators {
+					if ind == tt.wantIndicator {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("WorkIndicators = %v, want it to name %q", state.WorkIndicators, tt.wantIndicator)
+				}
+			}
+		})
+	}
+}
+
+// TestParser_PiIndicatorSetsDifferPerDirection pins the property a single
+// direction cannot: the evidence named for a working pi pane is not the
+// evidence named for a resting one. A detector that answered from the chrome
+// would produce the same set for both.
+func TestParser_PiIndicatorSetsDifferPerDirection(t *testing.T) {
+	p := NewParser()
+
+	idle, err := p.ParseWithHint(loadTestData(t, "pi_idle.txt"), AgentTypePi)
+	if err != nil {
+		t.Fatalf("ParseWithHint(pi_idle.txt) error: %v", err)
+	}
+	working, err := p.ParseWithHint(loadTestData(t, "pi_working.txt"), AgentTypePi)
+	if err != nil {
+		t.Fatalf("ParseWithHint(pi_working.txt) error: %v", err)
+	}
+
+	if len(working.WorkIndicators) == 0 {
+		t.Fatal("working capture named no indicators")
+	}
+	if equalStringSets(idle.WorkIndicators, working.WorkIndicators) {
+		t.Errorf("idle and working name the same indicators (%v); the verdict is not reading the pane", working.WorkIndicators)
+	}
+}
+
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, s := range a {
+		seen[s]++
+	}
+	for _, s := range b {
+		seen[s]--
+		if seen[s] < 0 {
+			return false
+		}
+	}
+	return true
+}

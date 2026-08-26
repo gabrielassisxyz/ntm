@@ -861,3 +861,150 @@ func hasSubstr(s, substr string) bool {
 	}
 	return false
 }
+
+// piIdleScreen and piWorkingScreen are trimmed from the same real captures
+// checked into internal/agent/testdata. They differ in one line: the spinner.
+// Everything else — the rules, the cwd line, the bottom status line — is pi's
+// permanent chrome, drawn in both states.
+const (
+	piIdleScreen = ` from drifting into unknown.
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+~/repositories/ntm (main)
+↑3.3M ↓8.2k 43.0%/262k (auto)                                (litellm) kimi-k2.7
+`
+	piWorkingScreen = ` In exactly three short paragraphs, explain what a tmux pane title is used for.
+
+
+ ⠹ Working...
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+~/repositories/ntm (main)
+↑3.1M ↓7.9k 42.8%/262k (auto)                                (litellm) kimi-k2.7
+`
+	// A resting pi pane whose own answer contains the words the wildcard
+	// CategoryThinking patterns match. Before pi was routed through
+	// PiActivelyWorking this read as live-busy, which is the shape of a
+	// dispatcher that never finds an idle pane in a swarm: agents narrate.
+	piIdleNarratingScreen = ` Analyzing the dependency graph...
+ Processing 42 files...
+ Thinking about the trade-offs...
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+~/repositories/ntm (main)
+↑3.4M ↓8.2k 41.0%/262k (auto)                                (litellm) kimi-k2.7
+`
+	// A resting pi pane whose transcript quotes another tool's progress output.
+	// The wildcard braille_spinner pattern matches the glyph wherever it lands;
+	// agent.PiActivelyWorking requires the glyph to lead pi's own "Working"
+	// line, so only one of the two can tell this pane from a busy one.
+	piIdleForeignSpinnerScreen = ` I ran the build and it finished clean:
+
+ ⠙ compiling ntm v1.26.0
+ ⠹ linking
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+~/repositories/ntm (main)
+↑3.4M ↓8.4k 44.1%/262k (auto)                                (litellm) kimi-k2.7
+`
+)
+
+// TestIsLiveBusy_Pi_ReadsTheSpinnerNotTheProse pins that pi's live-busy verdict
+// comes from agent.PiActivelyWorking — the same signal internal/status uses —
+// rather than from the wildcard thinking patterns, which fire on a glyph or on
+// ordinary English and would report a narrating agent as busy.
+func TestIsLiveBusy_Pi_ReadsTheSpinnerNotTheProse(t *testing.T) {
+	tests := []struct {
+		name     string
+		screen   string
+		wantBusy bool
+	}{
+		{"mid-turn spinner", piWorkingScreen, true},
+		{"resting at the status line", piIdleScreen, false},
+		{"resting while its own answer says thinking/processing/analyzing", piIdleNarratingScreen, false},
+		{"resting while showing another tool's braille spinner", piIdleForeignSpinnerScreen, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsLiveBusy(tt.screen, string(agent.AgentTypePi), 80); got != tt.wantBusy {
+				t.Errorf("IsLiveBusy(pi) = %v, want %v", got, tt.wantBusy)
+			}
+		})
+	}
+}
+
+// TestWorkIndicatorBasis_PiNamesItsOwnEvidence asserts pi stops reporting the
+// generic fallback tokens. The generic names are why a working surface was read
+// as a broken one: "live_window_thinking" is what an unrecognised agent reports,
+// so a correct pi verdict was indistinguishable from a detector that had given
+// up. Both directions are asserted, and they must not collide.
+func TestWorkIndicatorBasis_PiNamesItsOwnEvidence(t *testing.T) {
+	piState := func() *agent.AgentState { return &agent.AgentState{Type: agent.AgentTypePi} }
+
+	workingObs := statuspkg.PaneObservation{}
+	workingObs.Current.Status.State = statuspkg.StateWorking
+	idleObs := statuspkg.PaneObservation{}
+	idleObs.Current.Status.State = statuspkg.StateIdle
+
+	workingBasis := workIndicatorBasis(
+		piState(), true,
+		PaneWorkStatus{IsWorking: true},
+		PaneWorkStatus{IsWorking: true},
+		workingObs,
+	)
+	if workingBasis != "pi_live_spinner" {
+		t.Errorf("working basis = %q, want %q", workingBasis, "pi_live_spinner")
+	}
+
+	idleBasis := workIndicatorBasis(
+		piState(), false,
+		PaneWorkStatus{IsIdle: true},
+		PaneWorkStatus{IsIdle: true},
+		idleObs,
+	)
+	if idleBasis != "pi_status_line_idle" {
+		t.Errorf("idle basis = %q, want %q", idleBasis, "pi_status_line_idle")
+	}
+	if workingBasis == idleBasis {
+		t.Errorf("both directions report %q; the basis does not distinguish them", workingBasis)
+	}
+}
+
+// TestWorkIndicatorBasis_ClaudeAndCodexUnchanged guards the types that already
+// worked: the pi arms are additions, not a reshuffle of the switch.
+func TestWorkIndicatorBasis_ClaudeAndCodexUnchanged(t *testing.T) {
+	tests := []struct {
+		agentType agent.AgentType
+		liveBusy  bool
+		final     PaneWorkStatus
+		state     statuspkg.AgentState
+		wantBasis string
+	}{
+		{agent.AgentTypeClaudeCode, true, PaneWorkStatus{IsWorking: true}, statuspkg.StateWorking, "claude_live_spinner"},
+		{agent.AgentTypeCodex, true, PaneWorkStatus{IsWorking: true}, statuspkg.StateWorking, "codex_live_working_indicator"},
+		{agent.AgentTypeClaudeCode, false, PaneWorkStatus{IsIdle: true}, statuspkg.StateIdle, "claude_finished_turn_prompt"},
+		{agent.AgentTypeCodex, false, PaneWorkStatus{IsIdle: true}, statuspkg.StateIdle, "codex_composer_placeholder"},
+		{agent.AgentTypeGemini, true, PaneWorkStatus{IsWorking: true}, statuspkg.StateWorking, "live_window_thinking"},
+		{agent.AgentTypeGemini, false, PaneWorkStatus{IsIdle: true}, statuspkg.StateIdle, "idle_prompt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.agentType)+"/"+tt.wantBasis, func(t *testing.T) {
+			obs := statuspkg.PaneObservation{}
+			obs.Current.Status.State = tt.state
+			got := workIndicatorBasis(&agent.AgentState{Type: tt.agentType}, tt.liveBusy, tt.final, tt.final, obs)
+			if got != tt.wantBasis {
+				t.Errorf("basis = %q, want %q", got, tt.wantBasis)
+			}
+		})
+	}
+}

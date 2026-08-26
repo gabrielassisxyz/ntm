@@ -276,6 +276,27 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 		return
 	}
 
+	// pi has the same shape as Claude and needs the same gate: its bottom status
+	// line ("13.0%/262k (auto)") is PERMANENT CHROME, drawn identically while a
+	// turn is in flight and while the agent waits, and it is pi's only idle
+	// pattern. Without this short-circuit detectIdle's chrome match wins and a
+	// mid-turn pi pane parses as idle — internal/status already gates the chrome
+	// on PiActivelyWorking for exactly this reason, so a consumer reading the
+	// parser directly got the opposite verdict from one reading the observer.
+	// PiActivelyWorking is anchored on the spinner-led "Working" line in a
+	// bounded live tail, so a finished turn's leftover frame cannot hold the
+	// verdict open.
+	if state.Type == AgentTypePi && PiActivelyWorking(output, 0) {
+		state.IsWorking = true
+		state.IsIdle = false
+		// Named unconditionally rather than only when empty: the substring
+		// list's "working..." also matches a dead spinner frame anywhere in
+		// scrollback, so it does not identify what was actually observed.
+		state.WorkIndicators = append(state.WorkIndicators, "pi_live_spinner")
+		state.IsInError = p.detectError(output, state.Type)
+		return
+	}
+
 	// Conflict resolution: Prompt beats substring heuristics
 	// If we see a definitive prompt at the end (IsIdle), we are not working,
 	// regardless of what keywords appear in the scrollback.

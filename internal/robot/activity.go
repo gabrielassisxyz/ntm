@@ -1055,6 +1055,18 @@ func IsLiveBusy(scrollback string, agentType string, paneWidth int) bool {
 		return agent.ClaudeActivelyWorking(scrollback, paneWidth)
 	}
 
+	// pi panes: same reason, one layer simpler. pi has no entry in the pattern
+	// library at all, so it could only ever reach CategoryThinking through the
+	// wildcard spinner/"thinking…"/"processing…" patterns — which fire on the
+	// glyph rather than on anything pi renders, and would report the pane's own
+	// prose as work. agent.PiActivelyWorking is the signal internal/status
+	// already classifies pi with, so routing pi here keeps the robot surface
+	// and the canonical observer answering from the same evidence instead of
+	// agreeing by coincidence.
+	if normalizeAgentType(agentType) == string(agent.AgentTypePi) {
+		return agent.PiActivelyWorking(scrollback, paneWidth)
+	}
+
 	live := lastNLines(scrollback, util.WidthAdaptiveTailLines(paneWidth, liveThinkingWindowLines))
 	if live == "" {
 		return false

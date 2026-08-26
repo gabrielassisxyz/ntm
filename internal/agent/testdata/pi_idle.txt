@@ -1,0 +1,12 @@
+ Because the title survives scrollback changes and is available from tmux
+ without capturing the pane text, it acts as a cheap, stable signal. When the
+ captured output is ambiguous, the title’s agent-type hint keeps classification
+ from drifting into unknown.
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+~/repositories/ntm (main)
+↑3.3M ↓8.2k 43.0%/262k (auto)                                (litellm) kimi-k2.7
+
+
