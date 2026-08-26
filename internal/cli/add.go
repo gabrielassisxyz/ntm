@@ -798,6 +798,7 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			SystemPromptFile: systemPromptFile,
 			PersonaName:      personaName,
 			ReasoningEffort:  resolvedReasoningEffort,
+			Account:          agent.Account,
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
