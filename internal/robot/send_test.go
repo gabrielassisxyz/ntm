@@ -152,7 +152,7 @@ func TestSendOutputRenderEvidenceJSON(t *testing.T) {
 func TestRobotSendVerifyRenderRealTmux(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
-	session := "ntm-send-render"
+	session := "ntm-send-render_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(session, ""); err != nil {
 		t.Fatalf("create tmux session: %v", err)
 	}

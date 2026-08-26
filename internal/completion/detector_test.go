@@ -1770,7 +1770,7 @@ func TestCompletionPatternRequiresBeadClosedConfirmation(t *testing.T) {
 	testutil.AcquireGlobalTmuxTestLockForTest(t)
 	t.Setenv("HOME", t.TempDir())
 
-	session := "promptecho-session"
+	session := "promptecho-session_" + time.Now().Format("150405")
 	_ = tmux.KillSession(session)
 	if err := tmux.CreateSession(session, t.TempDir()); err != nil {
 		t.Skipf("CreateSession failed (host-sensitive): %v", err)
@@ -1835,7 +1835,7 @@ func TestIdleTimeoutWithOpenBeadReportsFailed(t *testing.T) {
 	testutil.AcquireGlobalTmuxTestLockForTest(t)
 	t.Setenv("HOME", t.TempDir())
 
-	session := "idlefail-session"
+	session := "idlefail-session_" + time.Now().Format("150405")
 	_ = tmux.KillSession(session)
 	if err := tmux.CreateSession(session, t.TempDir()); err != nil {
 		t.Skipf("CreateSession failed (host-sensitive): %v", err)

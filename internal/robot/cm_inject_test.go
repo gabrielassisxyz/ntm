@@ -657,7 +657,7 @@ func TestGetSendWithMemoryDeliversInjectedBlockRealTmux(t *testing.T) {
 		},
 	})
 
-	session := "ntm-send-cm-inject"
+	session := "ntm-send-cm-inject_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(session, ""); err != nil {
 		t.Fatalf("create tmux session: %v", err)
 	}

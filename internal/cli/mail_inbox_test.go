@@ -332,7 +332,7 @@ func TestRunMailInboxSessionAgentsUsesSavedRegistryIdentity(t *testing.T) {
 	cfg = &config.Config{ProjectsBase: projectsBase}
 	t.Cleanup(func() { cfg = oldCfg })
 
-	session := "mailinboxregistry"
+	session := "mailinboxregistry_" + time.Now().Format("150405")
 	_ = tmux.KillSession(session)
 	if err := tmux.CreateSession(session, projectKey); err != nil {
 		t.Fatalf("CreateSession(%q): %v", session, err)
