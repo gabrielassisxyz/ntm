@@ -618,6 +618,86 @@ func TestDiscoverPiOrderedAssignment(t *testing.T) {
 	}
 }
 
+func TestDiscoverPiNoOwnTranscriptReportsNil(t *testing.T) {
+	home := t.TempDir()
+	workDir := "/data/projects/pidemo"
+	sessionsDir := filepath.Join(home, ".pi", "agent", "sessions", PiProjectDir(workDir))
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The pane's process starts at T and its own transcript has not been
+	// written yet. A sibling session started 300001ms later (just beyond
+	// processSessionWindow, 5 minutes) must not be handed out as this
+	// pane's id: a wrong id is worse than an absent one, because the
+	// consumer joins on it.
+	processStart := time.Date(2026, 8, 26, 2, 46, 52, 0, time.UTC)
+	siblingStart := processStart.Add(300001 * time.Millisecond)
+	sibling := filepath.Join(sessionsDir, siblingStart.Format("2006-01-02T15-04-05-000Z")+"_sibling-session.jsonl")
+	header := fmt.Sprintf(`{"type":"session","version":3,"id":"sibling-session","timestamp":"%s","cwd":"%s"}`+"\n",
+		siblingStart.Format(time.RFC3339Nano), workDir)
+	if err := os.WriteFile(sibling, []byte(header), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	discoverer := nativeDiscoverer(home)
+	discoverer.findProcessStart = func(int, string) int64 { return processStart.UnixMilli() }
+
+	if info := discoverer.Discover("pi", workDir, 100); info != nil {
+		t.Errorf("pane with no own transcript: got session %q (%s), want nil", info.SessionID, info.SourcePath)
+	}
+}
+
+func TestDiscoverPiForwardWindowBoundary(t *testing.T) {
+	// Literal millisecond values bracket processSessionWindow (5 minutes =
+	// 300000ms) so a change to the constant fails these tests instead of
+	// being absorbed silently.
+	processStart := time.Date(2026, 8, 26, 2, 46, 52, 0, time.UTC)
+	workDir := "/data/projects/pidemo"
+
+	plant := func(t *testing.T, sessionsDir, id string, startedAt time.Time) {
+		t.Helper()
+		filename := startedAt.Format("2006-01-02T15-04-05-000Z") + "_" + id + ".jsonl"
+		header := fmt.Sprintf(`{"type":"session","version":3,"id":"%s","timestamp":"%s","cwd":"%s"}`+"\n",
+			id, startedAt.Format(time.RFC3339Nano), workDir)
+		if err := os.WriteFile(filepath.Join(sessionsDir, filename), []byte(header), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("just inside the window", func(t *testing.T) {
+		home := t.TempDir()
+		sessionsDir := filepath.Join(home, ".pi", "agent", "sessions", PiProjectDir(workDir))
+		if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		plant(t, sessionsDir, "inside-session", processStart.Add(299999*time.Millisecond))
+		discoverer := nativeDiscoverer(home)
+		discoverer.findProcessStart = func(int, string) int64 { return processStart.UnixMilli() }
+		info := discoverer.Discover("pi", workDir, 100)
+		if info == nil {
+			t.Fatal("candidate 299999ms after process start: expected discovery, got nil")
+		}
+		if info.SessionID != "inside-session" {
+			t.Errorf("SessionID = %q, want inside-session", info.SessionID)
+		}
+	})
+
+	t.Run("just outside the window", func(t *testing.T) {
+		home := t.TempDir()
+		sessionsDir := filepath.Join(home, ".pi", "agent", "sessions", PiProjectDir(workDir))
+		if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		plant(t, sessionsDir, "outside-session", processStart.Add(300001*time.Millisecond))
+		discoverer := nativeDiscoverer(home)
+		discoverer.findProcessStart = func(int, string) int64 { return processStart.UnixMilli() }
+		if info := discoverer.Discover("pi", workDir, 100); info != nil {
+			t.Errorf("candidate 300001ms after process start: got session %q, want nil", info.SessionID)
+		}
+	})
+}
+
 func TestDiscoverNonResumableAgent(t *testing.T) {
 	discoverer := NewDiscoverer()
 	if info := discoverer.Discover("user", "/data/projects/demo", 0); info != nil {

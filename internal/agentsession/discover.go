@@ -1130,8 +1130,17 @@ func newestPiSessionForCwdContext(ctx context.Context, root, workDir string, pro
 	})
 	if processStartedAt > 0 {
 		for _, candidate := range candidates {
-			if candidate.startedAt > 0 && candidate.startedAt < processStartedAt {
+			if candidate.startedAt <= 0 {
 				continue
+			}
+			if candidate.startedAt < processStartedAt {
+				continue
+			}
+			if _, ok := processStartDelta(processStartedAt, candidate.startedAt); !ok {
+				// Candidates are sorted by startedAt ascending, so once one
+				// starts more than processSessionWindow after the process,
+				// every later candidate does too.
+				break
 			}
 			return candidate.path, candidate.mod
 		}
