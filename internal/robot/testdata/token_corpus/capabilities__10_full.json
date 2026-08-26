@@ -6119,6 +6119,13 @@
           "description": "Comma-separated pane indices to filter (applies across sessions)"
         },
         {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Session name to scope stats to (panes of that session only)"
+        },
+        {
           "name": "rano-window",
           "flag": "--rano-window",
           "type": "duration",
@@ -6129,7 +6136,8 @@
       ],
       "examples": [
         "ntm --robot-rano-stats",
-        "ntm --robot-rano-stats --panes=2,3 --rano-window=10m"
+        "ntm --robot-rano-stats --panes=2,3 --rano-window=10m",
+        "ntm --robot-rano-stats --session=proj"
       ],
       "transports": [
         {
@@ -13522,6 +13530,13 @@
           "description": "Comma-separated pane indices to filter (applies across sessions)"
         },
         {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Session name to scope stats to (panes of that session only)"
+        },
+        {
           "name": "rano-window",
           "flag": "--rano-window",
           "type": "duration",
@@ -13532,7 +13547,8 @@
       ],
       "examples": [
         "ntm --robot-rano-stats",
-        "ntm --robot-rano-stats --panes=2,3 --rano-window=10m"
+        "ntm --robot-rano-stats --panes=2,3 --rano-window=10m",
+        "ntm --robot-rano-stats --session=proj"
       ],
       "transports": [
         {

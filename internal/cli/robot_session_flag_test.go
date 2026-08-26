@@ -1,7 +1,13 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,6 +50,67 @@ func newRobotSessionTestCmd(t *testing.T) *cobra.Command {
 	cmd.Flags().StringVar(&robotPaletteSession, "palette-session", "", "")
 	cmd.Flags().StringVar(&robotSharedSession, "session", "", "")
 	return cmd
+}
+
+// TestRobotRanoStatsSessionReachesOptions is the bd-y5rmg dispatch-branch
+// guard: the resolved --session must reach the robot options. With no rano
+// on PATH the query fails at the availability check, but the failure
+// envelope echoes the requested session in query.session — which only
+// happens when the branch passes the resolved session through.
+//
+// The command runs in a subprocess (the same helper the process-contract
+// tests use) because the root command is a package singleton: earlier tests
+// leave SetArgs, flag values and cobra's per-flag Changed state behind, and
+// a stale flag can hijack the dispatch chain in ways no reset can fully
+// undo. A fresh process has none of that state.
+func TestRobotRanoStatsSessionReachesOptions(t *testing.T) {
+	rawArgs, err := json.Marshal([]string{"--robot-rano-stats", "--session=proj"})
+	if err != nil {
+		t.Fatalf("encode helper args: %v", err)
+	}
+	tmpDir := t.TempDir()
+	homeDir := filepath.Join(tmpDir, "home")
+	configHome := filepath.Join(tmpDir, "xdg")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(homeDir) failed: %v", err)
+	}
+	if err := os.MkdirAll(configHome, 0o755); err != nil {
+		t.Fatalf("MkdirAll(configHome) failed: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+	cmd.Dir = tmpDir
+	cmd.Env = envWithOverrides(os.Environ(),
+		"HOME="+homeDir,
+		"XDG_CONFIG_HOME="+configHome,
+		"NTM_NO_COLOR=1",
+		"NTM_CONFIG="+filepath.Join(tmpDir, "missing.toml"),
+		"NTM_ROBOT_FORMAT=",
+		"NTM_OUTPUT_FORMAT=",
+		"TOON_DEFAULT_FORMAT=",
+		"NTM_ROBOT_VERBOSITY=",
+		"NTM_ROBOT_CONTRACT_ARGS="+string(rawArgs),
+	)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	exitCode := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("command failed without process exit status: %v", err)
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1 (DEPENDENCY_MISSING); stdout=%s stderr=%s", exitCode, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"session":"proj"`) {
+		t.Errorf("failure envelope does not echo the requested session; got: %s", stdout.String())
+	}
 }
 
 // TestResolveRobotSessionSharedFlag is the ntm#214 regression guard: the
@@ -132,7 +199,9 @@ func TestResolveRobotSnapshotSession(t *testing.T) {
 // the six queries that used to scope by a bespoke session flag now resolve the
 // shared --session flag through the same helper path as the bucket-A queries.
 // --robot-digest reuses the attention resolver, so it is asserted through
-// resolveRobotAttentionSession.
+// resolveRobotAttentionSession. --robot-rano-stats is the eighth query of the
+// 2026-08-23 inventory: the only one that previously had no session scope at
+// all, now resolved through the same shared path.
 func TestResolveRobotSessionConvergedQueries(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -144,6 +213,7 @@ func TestResolveRobotSessionConvergedQueries(t *testing.T) {
 		{name: "overlay", resolve: resolveRobotOverlaySession},
 		{name: "markdown", resolve: resolveRobotMarkdownSession},
 		{name: "dismiss-alert", resolve: resolveRobotDismissSession},
+		{name: "rano-stats", resolve: resolveRobotRanoStatsSession},
 	}
 
 	for _, tt := range tests {

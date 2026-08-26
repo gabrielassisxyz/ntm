@@ -16,22 +16,25 @@ import (
 
 // RanoStatsOptions configures the --robot-rano-stats command.
 type RanoStatsOptions struct {
-	Panes  []int  // pane indices to include (empty = all non-control panes)
-	Window string // time window (e.g., 5m, 1h)
+	Panes   []int  // pane indices to include (empty = all non-control panes)
+	Window  string // time window (e.g., 5m, 1h)
+	Session string // session scope (empty = all sessions)
 }
 
 // RanoStatsOutput represents the response from --robot-rano-stats.
 type RanoStatsOutput struct {
 	RobotResponse
-	Window string                   `json:"window"`
-	Query  RanoStatsQuery           `json:"query"`
-	Panes  map[string]RanoPaneStats `json:"panes"`
-	Total  RanoTotals               `json:"total"`
+	Window              string                   `json:"window"`
+	Query               RanoStatsQuery           `json:"query"`
+	Panes               map[string]RanoPaneStats `json:"panes"`
+	Total               RanoTotals               `json:"total"`
+	PanesOutsideSession []int                    `json:"panes_outside_session,omitempty"`
 }
 
 // RanoStatsQuery captures request parameters.
 type RanoStatsQuery struct {
-	PanesRequested []int `json:"panes_requested,omitempty"`
+	PanesRequested []int  `json:"panes_requested,omitempty"`
+	Session        string `json:"session,omitempty"`
 }
 
 // RanoPaneStats aggregates network stats for a pane.
@@ -73,7 +76,7 @@ func GetRanoStats(opts RanoStatsOptions) (*RanoStatsOutput, error) {
 		return &RanoStatsOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Invalid --rano-window (use 5m, 1h, etc.)"),
 			Window:        opts.Window,
-			Query:         RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:         RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:         map[string]RanoPaneStats{},
 		}, nil
 	}
@@ -87,7 +90,7 @@ func GetRanoStats(opts RanoStatsOptions) (*RanoStatsOutput, error) {
 		return &RanoStatsOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to check rano availability"),
 			Window:        window,
-			Query:         RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:         RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:         map[string]RanoPaneStats{},
 		}, nil
 	}
@@ -100,7 +103,7 @@ func GetRanoStats(opts RanoStatsOptions) (*RanoStatsOutput, error) {
 				"Install rano and ensure it is on PATH",
 			),
 			Window: window,
-			Query:  RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:  RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:  map[string]RanoPaneStats{},
 		}, nil
 	}
@@ -112,7 +115,7 @@ func GetRanoStats(opts RanoStatsOptions) (*RanoStatsOutput, error) {
 				"Update rano to a compatible version",
 			),
 			Window: window,
-			Query:  RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:  RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:  map[string]RanoPaneStats{},
 		}, nil
 	}
@@ -124,7 +127,7 @@ func GetRanoStats(opts RanoStatsOptions) (*RanoStatsOutput, error) {
 				"Grant CAP_NET_ADMIN or run with appropriate privileges",
 			),
 			Window: window,
-			Query:  RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:  RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:  map[string]RanoPaneStats{},
 		}, nil
 	}
@@ -136,18 +139,18 @@ func GetRanoStats(opts RanoStatsOptions) (*RanoStatsOutput, error) {
 				"Ensure /proc is accessible for PID mapping",
 			),
 			Window: window,
-			Query:  RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:  RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:  map[string]RanoPaneStats{},
 		}, nil
 	}
 
-	// Build pane filter map (keys are pane identity strings).
-	targets, err := collectRanoTargetPanes(ctx, opts.Panes)
+	// List the pane inventory (sessions and their panes) for attribution.
+	sessions, panesBySession, err := collectRanoPaneInventory(ctx)
 	if err != nil {
 		return &RanoStatsOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to list tmux panes"),
 			Window:        window,
-			Query:         RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:         RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:         map[string]RanoPaneStats{},
 		}, nil
 	}
@@ -158,7 +161,7 @@ func GetRanoStats(opts RanoStatsOptions) (*RanoStatsOutput, error) {
 		return &RanoStatsOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to refresh PID map"),
 			Window:        window,
-			Query:         RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:         RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:         map[string]RanoPaneStats{},
 		}, nil
 	}
@@ -168,28 +171,12 @@ func GetRanoStats(opts RanoStatsOptions) (*RanoStatsOutput, error) {
 		return &RanoStatsOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to query rano stats"),
 			Window:        window,
-			Query:         RanoStatsQuery{PanesRequested: opts.Panes},
+			Query:         RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
 			Panes:         map[string]RanoPaneStats{},
 		}, nil
 	}
 
-	panes, total := aggregateRanoStats(stats, func(pid int) *rano.PaneIdentity {
-		return pidMap.GetPaneForPID(pid)
-	}, func(identity *rano.PaneIdentity) bool {
-		if identity == nil {
-			return false
-		}
-		_, ok := targets[identity.String()]
-		return ok
-	})
-
-	return &RanoStatsOutput{
-		RobotResponse: NewRobotResponse(true),
-		Window:        window,
-		Query:         RanoStatsQuery{PanesRequested: opts.Panes},
-		Panes:         panes,
-		Total:         total,
-	}, nil
+	return ranoStatsFromInventory(opts, window, sessions, panesBySession, stats, pidMap.GetPaneForPID), nil
 }
 
 // PrintRanoStats handles the --robot-rano-stats command.
@@ -212,24 +199,45 @@ func normalizeRanoWindow(window string) (string, error) {
 	return window, nil
 }
 
-func collectRanoTargetPanes(ctx context.Context, panesFilter []int) (map[string]tmux.Pane, error) {
+// collectRanoPaneInventory lists every tmux session and its panes.
+func collectRanoPaneInventory(ctx context.Context) ([]tmux.Session, map[string][]tmux.Pane, error) {
 	sessions, err := tmux.ListSessions()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	filter := make(map[int]bool)
-	for _, idx := range panesFilter {
-		filter[idx] = true
-	}
-
-	targets := make(map[string]tmux.Pane)
+	panesBySession := make(map[string][]tmux.Pane, len(sessions))
 	for _, sess := range sessions {
 		panes, err := tmux.GetPanesContext(ctx, sess.Name)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		for _, pane := range panes {
+		panesBySession[sess.Name] = panes
+	}
+	return sessions, panesBySession, nil
+}
+
+// selectRanoTargetPanes applies the pane-index and session filters to a pane
+// inventory. When sessionName is set, only that session's panes qualify,
+// requested indices with no pane in the session are reported in outside
+// rather than silently dropped, and sessionFound reports whether the session
+// was present in the inventory at all.
+func selectRanoTargetPanes(sessions []tmux.Session, panesBySession map[string][]tmux.Pane, panesFilter []int, sessionName string) (targets map[string]tmux.Pane, outside []int, sessionFound bool) {
+	filter := make(map[int]bool)
+	missing := make(map[int]bool)
+	for _, idx := range panesFilter {
+		filter[idx] = true
+		missing[idx] = true
+	}
+
+	targets = make(map[string]tmux.Pane)
+	for _, sess := range sessions {
+		if sessionName != "" && sess.Name != sessionName {
+			continue
+		}
+		if sess.Name == sessionName {
+			sessionFound = true
+		}
+		for _, pane := range panesBySession[sess.Name] {
 			if pane.Index <= 0 {
 				continue
 			}
@@ -238,9 +246,55 @@ func collectRanoTargetPanes(ctx context.Context, panesFilter []int) (map[string]
 			}
 			key := paneIdentityKey(pane, sess.Name)
 			targets[key] = pane
+			delete(missing, pane.Index)
 		}
 	}
-	return targets, nil
+
+	if sessionName != "" {
+		for idx := range missing {
+			outside = append(outside, idx)
+		}
+		sort.Ints(outside)
+	}
+	return targets, outside, sessionFound
+}
+
+// ranoStatsFromInventory builds the response from a pane inventory and
+// process stats. It is the testable core of GetRanoStats: production feeds it
+// live tmux/rano data, tests feed it a stubbed inventory. Session scoping,
+// the outside-session report and the SESSION_NOT_FOUND envelope all live here
+// so the response shape is testable without tmux or rano.
+func ranoStatsFromInventory(opts RanoStatsOptions, window string, sessions []tmux.Session, panesBySession map[string][]tmux.Pane, stats []tools.RanoProcessStats, pidLookup func(int) *rano.PaneIdentity) *RanoStatsOutput {
+	targets, outside, sessionFound := selectRanoTargetPanes(sessions, panesBySession, opts.Panes, opts.Session)
+	if opts.Session != "" && !sessionFound {
+		return &RanoStatsOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("session '%s' not found", opts.Session),
+				ErrCodeSessionNotFound,
+				"Use 'ntm --robot-status' to see available sessions",
+			),
+			Window: window,
+			Query:  RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
+			Panes:  map[string]RanoPaneStats{},
+		}
+	}
+
+	panes, total := aggregateRanoStats(stats, pidLookup, func(identity *rano.PaneIdentity) bool {
+		if identity == nil {
+			return false
+		}
+		_, ok := targets[identity.String()]
+		return ok
+	})
+
+	return &RanoStatsOutput{
+		RobotResponse:       NewRobotResponse(true),
+		Window:              window,
+		Query:               RanoStatsQuery{PanesRequested: opts.Panes, Session: opts.Session},
+		Panes:               panes,
+		Total:               total,
+		PanesOutsideSession: outside,
+	}
 }
 
 func paneIdentityKey(pane tmux.Pane, session string) string {
