@@ -27,6 +27,14 @@
 #
 # Worktrees live OUTSIDE the repo, in ~/repositories/.worktrees/<repo>/<task>, so they never
 # pollute ~/repositories. Override the base dir with $WORKTREE_BASE.
+#
+# HAZARD (bd-c2h): `git stash` / `git stash pop` share ONE stash stack across every worktree
+# of a repository — the stack lives in the common git dir's refs/stash, not in any worktree.
+# Two agents stashing and popping concurrently each restore the OTHER's changes into their own
+# tree, and the crossing is invisible to `git status` (the files just read "dirty") and to any
+# gate that only inspects the branch's commits, because the commits themselves are correct.
+# Do not use `git stash` to test on a pristine tree in a worktree; commit and revert instead.
+# `worktree contamination` is the merge-time gate that catches the crossing when it happens.
 set -euo pipefail
 
 # Resolve to the physical path immediately: agent sessions run under a shallow orch-home whose
@@ -93,6 +101,7 @@ worktree — isolated worktrees for $repo (default branch: $def)
   worktree rm <branch|task>    remove a worktree (-f to force past unsaved work)
   worktree adopt <path>        write .beads/redirect into a worktree that was created without it
   worktree prune-merged [--yes] delete merged branches with no worktree (lists them without --yes)
+  worktree contamination      report dirty files a worktree's own branch did not change (exit 1 if any)
 
 Worktrees live in $WORKTREE_BASE/$repo/<task>.
 EOF
@@ -658,6 +667,52 @@ cmd_prune_merged() {
     [ "$failed" -eq 0 ]
 }
 
+# Detect cross-worktree contamination: a worktree whose dirty (uncommitted) files are not a
+# subset of the files its own branch changed relative to $def.
+#
+# WHY this exists (bd-c2h): `git stash` / `git stash pop` share ONE stash stack across all
+# worktrees of a repository — the stack lives in the common git dir's refs/stash, not in any
+# worktree. Two agents stashing and popping concurrently each restore the OTHER's changes into
+# their own tree. The crossing is invisible to `git status` (the files just read "dirty") and
+# to every gate that only inspects the branch's commits, because the commits themselves are
+# correct. This is the merge-time gate: a dirty file the branch did not itself change is
+# foreign, and the merge must refuse.
+#
+# Exit 0 when every worktree's dirty set is a subset of its own branch's diff; exit 1 (and
+# name the foreign files) otherwise. The main tree (the $def branch) is skipped: it is the
+# clean reference, and its .beads/issues.jsonl is written by the tracker, not by an agent.
+cmd_contamination() {
+    git rev-parse --verify --quiet "$def_ref" >/dev/null 2>&1 || {
+        echo "worktree: $def_ref does not exist — cannot judge contamination" >&2
+        return 1
+    }
+
+    local wt ref br dirty own foreign
+    local found=0
+    while IFS=$'\t' read -r wt ref; do
+        br="${ref#refs/heads/}"
+        [ "$br" = "$def" ] && continue
+        # Dirty files: uncommitted changes in this worktree. The sed strips the two-character
+        # porcelain status and, for a rename, keeps only the destination path.
+        dirty="$(git -C "$wt" status --porcelain 2>/dev/null | sed -E 's/^.. //; s/^.* -> //' | sort -u)"
+        # Own files: what this branch committed relative to the merge base with $def.
+        own="$(git -C "$wt" diff --name-only "$def_ref"...HEAD 2>/dev/null | sort -u)"
+        foreign="$(comm -23 <(printf '%s\n' "$dirty") <(printf '%s\n' "$own") | sed '/^$/d')"
+        if [ -n "$foreign" ]; then
+            found=1
+            echo "CONTAMINATED: $br ($(basename "$wt"))" >&2
+            printf '%s\n' "$foreign" | sed 's/^/  /' >&2
+        fi
+    done < <(git worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{print wt"\t"$2}')
+
+    if [ "$found" -ne 0 ]; then
+        echo "worktree: cross-worktree contamination detected — refuse to merge" >&2
+        return 1
+    fi
+    echo "no cross-worktree contamination"
+    return 0
+}
+
 case "${1:-}" in
     new)             shift; cmd_new "$@" ;;
     list|ls)         cmd_list ;;
@@ -665,6 +720,7 @@ case "${1:-}" in
     rm|remove)       shift; cmd_rm "$@" ;;
     adopt)           shift; cmd_adopt "$@" ;;
     prune-merged)    shift; cmd_prune_merged "$@" ;;
+    contamination)   shift; cmd_contamination "$@" ;;
     ""|-h|--help)    usage ;;
     *)               echo "unknown subcommand: $1" >&2; usage; exit 2 ;;
 esac
