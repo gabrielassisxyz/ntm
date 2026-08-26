@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Flush the beads export and stage it, so a bead created locally reaches the commit.
+#
+# WHY a hook and not a rule. .beads/beads.db is git-ignored and the tracked
+# .beads/issues.jsonl is the only copy of the tracker that travels with the
+# repository — and nothing else in this repository produces that export. On
+# 2026-08-26 two beads had never reached the committed export at all, and a third
+# pair of status changes was three exports behind; both were recovered only
+# because a session happened to run git status in the main tree. CI cannot be the
+# gate either: a CI job has the JSONL but not the database, so the comparison can
+# only run where both halves exist — here.
+#
+# WHY fail closed. A commit that cannot prove the export is current is exactly the
+# commit this hook exists to prevent, so a flush br refuses (a merge pending, a
+# certified hash mismatch) aborts the commit with br's own guidance rather than
+# silently committing a possibly-stale export.
+set -euo pipefail
+
+top="$(git rev-parse --show-toplevel)"
+cd "$top"
+
+command -v br >/dev/null 2>&1 || {
+    echo "pre-commit: br (beads_rust) is required to flush the .beads export — install it, or commit with --no-verify" >&2
+    exit 1
+}
+
+br sync --flush-only
+
+# A linked worktree's .beads/redirect points at the main tree's .beads directory and
+# br resolves every read and write through it — so the flush lands in the MAIN tree's
+# export while the worktree's own tracked copy stays stale, and staging that stale
+# copy would commit an export that silently lacks the freshly created bead. Copy the
+# flushed export back so this commit carries it. (redirect itself is git-ignored, so
+# the copy never stages it.)
+if [ -f .beads/redirect ]; then
+    target="$(cat .beads/redirect)"
+    if [ -f "$target/issues.jsonl" ]; then
+        cp "$target/issues.jsonl" .beads/issues.jsonl
+    fi
+fi
+
+# Stage every tracked file under .beads/ — the flush (or the copy above) may have
+# refreshed issues.jsonl. git ls-files lists index entries, so a tracked file deleted
+# in this tree is staged as a deletion, not silently dropped. -f is required even for
+# tracked files: .gitignore excludes .beads/.br_recovery/ (fork protection), and git
+# add refuses an explicitly-named path under an ignored directory regardless of index
+# state; force only applies to the listed, already-tracked paths.
+while IFS= read -r -d '' f; do
+    git add -f -- "$f"
+done < <(git ls-files -z -- .beads)

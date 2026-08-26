@@ -26,7 +26,7 @@ GOFLAGS := -trimpath
 # Output directory
 DIST := dist
 
-.PHONY: all build clean install test test-short test-all test-e2e lint fmt help pre-commit upgrade-contract test-worktree-tool
+.PHONY: all build clean install test test-short test-all test-e2e lint fmt help pre-commit upgrade-contract test-worktree-tool test-beads-hook
 
 all: build
 
@@ -84,6 +84,13 @@ test-e2e:
 ## Test scripts/worktree.sh (creates and closes a throwaway bead)
 test-worktree-tool:
 	bash scripts/test_worktree.sh
+
+# Deliberately not part of `test`/`test-all`: it needs br (beads_rust), clones this
+# repository into a scratch dir, and runs the repo-owned git hooks end to end.
+## Test the repo-owned beads hooks (.githooks/pre-commit + commit-msg) in a scratch clone
+test-beads-hook:
+	bash scripts/test_beads_hook.sh
+
 
 ## Validate upgrade asset naming contract
 upgrade-contract:
@@ -164,6 +171,7 @@ help:
 	@echo "  test-all    Run all tests including E2E"
 	@echo "  test-e2e    Run E2E tests only (requires agents)"
 	@echo "  test-worktree-tool  Test scripts/worktree.sh (creates and closes a throwaway bead)"
+	@echo "  test-beads-hook  Test the repo-owned beads hooks in a scratch clone"
 	@echo "  lint        Run linter"
 	@echo "  fmt         Format code"
 	@echo "  clean       Remove build artifacts"
