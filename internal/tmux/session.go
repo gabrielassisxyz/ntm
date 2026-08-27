@@ -959,7 +959,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	sep := FieldSeparator
 	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
-	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
+	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", sessionTarget(session), "-F", format)
 	if err != nil {
 		return nil, err
 	}
@@ -990,20 +990,36 @@ func GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	return DefaultClient.GetPanesContext(ctx, session)
 }
 
-// SessionPanePIDsContext returns the shell PID of every pane in a session,
-// resolved through an unambiguous target.
+// sessionTarget makes a session name unambiguous as a tmux target.
 //
 // The trailing colon is the whole point. A tmux target without one is a name to
 // be looked up, and which namespace it is looked up in depends on the command
-// and on what happens to exist at that moment; "<session>:" can only ever name a
-// session. Every other pane lookup in this package passes the bare name, which
-// is correct whenever it resolves and gives no warning when it does not.
+// and on what happens to exist at that moment: a bare name is tried as a window
+// of the *current* session first, and when that fails tmux answers about the
+// current session rather than reporting that the name was not found. So
+// `list-panes -s -t other-session` run from inside a session enumerates the
+// panes of the session the caller is sitting in, with no error anywhere.
 //
-// This exists for the callers that act destructively on what comes back. There,
-// a lookup that quietly answers about something else is not a wrong list, it is
-// signals delivered to processes nobody meant to touch.
+// That is not a cosmetic wrong list. `ntm spawn` counts the panes it gets back
+// to decide how many to create, so the fallback made it read another session's
+// panes as its own, create none, and launch every agent into windows belonging
+// to whoever was attached. "<session>:" can only ever name a session.
+func sessionTarget(session string) string {
+	if strings.HasSuffix(session, ":") {
+		return session
+	}
+	return session + ":"
+}
+
+// SessionPanePIDsContext returns the shell PID of every pane in a session,
+// resolved through an unambiguous target.
+//
+// It resolves through sessionTarget for the reason documented there. This
+// wrapper stays separate because its callers act destructively on what comes
+// back: a lookup that quietly answers about something else is not a wrong list,
+// it is signals delivered to processes nobody meant to touch.
 func (c *Client) SessionPanePIDsContext(ctx context.Context, session string) ([]int, error) {
-	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session+":", "-F", "#{pane_pid}")
+	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", sessionTarget(session), "-F", "#{pane_pid}")
 	if err != nil {
 		return nil, err
 	}
@@ -1278,7 +1294,7 @@ func (c *Client) GetFirstWindow(session string) (int, error) {
 // GetFirstWindowContext returns the first window index for a session with
 // cancellation support.
 func (c *Client) GetFirstWindowContext(ctx context.Context, session string) (int, error) {
-	output, err := c.RunContext(ctx, "list-windows", "-t", session, "-F", "#{window_index}")
+	output, err := c.RunContext(ctx, "list-windows", "-t", sessionTarget(session), "-F", "#{window_index}")
 	if err != nil {
 		return 0, err
 	}
@@ -3056,7 +3072,7 @@ func (c *Client) ApplyTiledLayoutContext(ctx context.Context, session string) er
 	if ctx == nil {
 		return errors.New("tmux layout context is required")
 	}
-	output, err := c.RunContext(ctx, "list-windows", "-t", session, "-F", "#{window_index}")
+	output, err := c.RunContext(ctx, "list-windows", "-t", sessionTarget(session), "-F", "#{window_index}")
 	if err != nil {
 		return err
 	}
@@ -3286,7 +3302,7 @@ type PaneActivity struct {
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	sep := FieldSeparator
 	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
-	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
+	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", sessionTarget(session), "-F", format)
 	if err != nil {
 		return nil, err
 	}
