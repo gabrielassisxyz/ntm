@@ -38,7 +38,7 @@ if [[ -z $runtime ]]; then
 fi
 
 echo "==> building $IMAGE with $runtime"
-"$runtime" build --file "$SCRIPT_ROOT/Containerfile.test" --tag "$IMAGE" "$SCRIPT_ROOT"
+"$runtime" build --file "$SCRIPT_ROOT/test.Containerfile" --tag "$IMAGE" "$SCRIPT_ROOT"
 
 # The repository is mounted read-only and copied inside. A test that writes
 # into its own checkout - and several do, leaving .ntm/ directories behind -
