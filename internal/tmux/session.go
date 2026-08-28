@@ -1974,7 +1974,7 @@ func (c *Client) loadBufferLocalContext(ctx context.Context, bufferName, content
 	binary := BinaryPath()
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "load-buffer", "-b", bufferName, "-")
+	cmd := exec.CommandContext(ctx, binary, c.socketArgs("load-buffer", "-b", bufferName, "-")...)
 	cmd.Stdin = strings.NewReader(content)
 	cmd.WaitDelay = 2 * time.Second
 	var stderr bytes.Buffer
@@ -3004,7 +3004,7 @@ func (c *Client) AttachOrSwitch(session string) error {
 			return c.RunSilent("switch-client", "-t", session)
 		}
 		// Interactive attach needs stdin/stdout, so use exec directly for local
-		cmd := exec.Command(BinaryPath(), "attach", "-t", session)
+		cmd := exec.Command(BinaryPath(), c.socketArgs("attach", "-t", session)...)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

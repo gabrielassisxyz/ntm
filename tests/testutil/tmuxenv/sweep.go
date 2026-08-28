@@ -122,7 +122,9 @@ func SweepStaleRootsIn(bases []string, tmuxBinary string) (int, error) {
 func reapRoot(tmuxBinary, root string) error {
 	if tmuxBinary != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		cmd := exec.CommandContext(ctx, tmuxBinary, "kill-server")
+		// -S pins the kill to this root's own socket explicitly; TMUX_TMPDIR
+		// below is kept as a second, redundant signal rather than the only one.
+		cmd := exec.CommandContext(ctx, tmuxBinary, "-S", DefaultSocketPath(root), "kill-server")
 		cmd.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+root)
 		_ = cmd.Run()
 		cancel()
