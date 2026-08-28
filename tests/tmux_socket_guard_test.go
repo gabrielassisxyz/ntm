@@ -10,17 +10,21 @@
 // a new raw invocation appears without an explicit socket, so the next
 // regression is caught by a red test instead of a lost session.
 //
-// Scope is deliberately narrow, not repo-wide. Dozens of e2e/integration
-// test files across the tree also call kill-session/new-session with no
-// -L/-S — those rely on a *different*, coarser safety net: their package's
-// own TestMain calls testutil.IsolateTmuxTestProcess, which sets
-// TMUX_TMPDIR for the whole test binary before any test runs and hard-exits
-// (never falls back) if it cannot. That net is unchanged by this bead and
-// is not what failed on 2026-08-28. What failed is the small set of files
-// below, which issue tmux commands directly rather than through a package
-// TestMain, so a hole here has no other net under it. Widening this guard
-// to the whole tree would fail on those unrelated, already-covered call
-// sites without fixing anything real.
+// The guard is repo-wide and ratcheted. Every *_test.go in the tree is
+// parsed, plus the two non-test files that ARE the isolation mechanism
+// (tests/testutil/throttle.go and the tmuxenv package). A file that already
+// carried an unsocketed call when this guard landed is listed in
+// tmuxSocketGuardLegacy and tolerated; anything else fails. That shape is
+// the point: a lint over a fixed file list cannot see a NEW file, and a new
+// file is exactly how the next regression arrives.
+//
+// The legacy list only ever shrinks. An entry naming a file that no longer
+// exists, or one that no longer has a violation, fails too — otherwise the
+// list rots into a permanent exemption nobody rechecks. Those files are not
+// unguarded meanwhile: each lives in a package whose TestMain calls
+// testutil.IsolateTmuxTestProcess, which sets TMUX_TMPDIR for the whole test
+// binary and hard-exits rather than falling back. That is a coarser net, and
+// it is not what failed on 2026-08-28.
 package tests
 
 import (
@@ -28,6 +32,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -35,19 +40,72 @@ import (
 	"testing"
 )
 
-// tmuxSocketGuardFiles are the files that issue tmux server/session-killing
-// commands directly (not through a package TestMain's isolation). Two are
-// not *_test.go by name — tests/testutil/throttle.go and the tmuxenv
-// package — because they ARE the isolation mechanism the *_test.go files
-// above depend on; excluding them on a naming technicality would leave the
-// actual 2026-08-28 fix path unguarded.
-var tmuxSocketGuardFiles = []string{
+// tmuxSocketGuardExtraFiles are scanned even though they are not *_test.go:
+// they are the isolation mechanism the test files depend on, so a hole here
+// has no other net under it.
+var tmuxSocketGuardExtraFiles = []string{
 	"tests/testutil/throttle.go",
 	"tests/testutil/tmuxenv/sweep.go",
-	"internal/tmux/session_test.go",
-	"internal/cli/bind_test.go",
-	"internal/pipeline/real_tmux_integration_test.go",
-	"internal/tui/dashboard/real_tmux_integration_test.go",
+}
+
+// tmuxSocketGuardSkipDirs are trees this guard does not own.
+var tmuxSocketGuardSkipDirs = map[string]bool{
+	".git":         true,
+	"third_party":  true,
+	"testdata":     true,
+	"node_modules": true,
+	"vendor":       true,
+}
+
+// tmuxSocketGuardLegacy holds the files that already carried an unsocketed
+// call when this guard landed. Each is covered by its package TestMain's
+// isolation; none is permitted to grow a new one, because a listed file is
+// still parsed and only its EXISTING count is tolerated.
+// The value is the number of unsocketed calls that file carried on
+// 2026-08-28, snapshotted by running this guard with an empty list. A file
+// may keep that many and no more; one added call fails the guard.
+var tmuxSocketGuardLegacy = map[string]int{
+	"e2e/checkpoint_test.go":                           2,
+	"e2e/conflict_deadlock_cli_e2e_test.go":            2,
+	"e2e/context_rotation_e2e_test.go":                 2,
+	"e2e/ensemble_cli_test.go":                         2,
+	"e2e/ensemble_spawn_e2e_test.go":                   1,
+	"e2e/fakeagent_harness_test.go":                    2,
+	"e2e/gates_restart_e2e_test.go":                    4,
+	"e2e/per_pane_account_test.go":                     1,
+	"e2e/privacy_test.go":                              1,
+	"e2e/redaction_test.go":                            2,
+	"e2e/robot_ensemble_test.go":                       2,
+	"e2e/robot_format_test.go":                         1,
+	"e2e/robot_verbosity_test.go":                      2,
+	"e2e/send_tracking_ack_e2e_test.go":                2,
+	"e2e/slb_approval_e2e_test.go":                     2,
+	"e2e/spawn_assignment_cli_e2e_test.go":             5,
+	"e2e/support_bundle_test.go":                       2,
+	"e2e/swarm_lifecycle_test.go":                      3,
+	"e2e/transcript_context_e2e_test.go":               2,
+	"e2e/workflow_run_e2e_test.go":                     2,
+	"internal/cli/monitor_integration_test.go":         2,
+	"internal/robot/send_idempotency_branches_test.go": 1,
+	"internal/robot/tui_parity_test.go":                1,
+	"internal/status/unified_test.go":                  2,
+	"tests/e2e/agent_mail_communication_test.go":       1,
+	"tests/e2e/agent_registration_test.go":             5,
+	"tests/e2e/agent_workflow_test.go":                 3,
+	"tests/e2e/assign_full_workflow_test.go":           2,
+	"tests/e2e/crash_recovery_test.go":                 5,
+	"tests/e2e/dependency_assignment_test.go":          1,
+	"tests/e2e/ensemble_cache_test.go":                 2,
+	"tests/e2e/ensemble_stream_test.go":                2,
+	"tests/e2e/file_reservation_integration_test.go":   2,
+	"tests/e2e/history_replay_test.go":                 1,
+	"tests/e2e/multi_session_test.go":                  7,
+	"tests/e2e/robot_mode_test.go":                     13,
+	"tests/e2e/session_lifecycle_test.go":              1,
+	"tests/e2e/session_persist_e2e_test.go":            2,
+	"tests/e2e/session_recovery_test.go":               1,
+	"tests/e2e/tui_parity_test.go":                     1,
+	"tests/integration/tui_parity_handlers_test.go":    24,
 }
 
 // tmuxSocketGuardTriggers are the tmux subcommands dangerous enough to
@@ -80,14 +138,27 @@ var tmuxSocketGuardExecFuncs = map[string]bool{
 func TestTmuxTestCodeAddressesExplicitSocket(t *testing.T) {
 	root := docsRepoRoot(t)
 
+	files, err := tmuxSocketGuardScanFiles(root)
+	if err != nil {
+		t.Fatalf("collecting files to scan: %v", err)
+	}
+
+	counts := make(map[string]int, len(files))
 	var offenders []string
-	for _, rel := range tmuxSocketGuardFiles {
-		path := filepath.Join(root, rel)
-		found, err := findUnsocketedTmuxKills(path)
+	for _, rel := range files {
+		found, err := findUnsocketedTmuxKills(filepath.Join(root, rel))
 		if err != nil {
 			t.Fatalf("parsing %s: %v", rel, err)
 		}
-		for _, f := range found {
+		if len(found) == 0 {
+			continue
+		}
+		counts[rel] = len(found)
+		tolerated := tmuxSocketGuardLegacy[rel]
+		if len(found) <= tolerated {
+			continue
+		}
+		for _, f := range found[tolerated:] {
 			offenders = append(offenders, fmt.Sprintf("%s:%d: %s", rel, f.line, f.detail))
 		}
 	}
@@ -99,6 +170,55 @@ func TestTmuxTestCodeAddressesExplicitSocket(t *testing.T) {
 			"if TMUX_TMPDIR is unset, overwritten, or inherited wrongly):\n  %s",
 			strings.Join(offenders, "\n  "))
 	}
+
+	// The ratchet: a legacy entry that no longer earns its place is removed,
+	// or the list becomes an exemption nobody rechecks.
+	var stale []string
+	for rel, tolerated := range tmuxSocketGuardLegacy {
+		switch actual := counts[rel]; {
+		case actual == 0:
+			stale = append(stale, fmt.Sprintf("%s: no unsocketed call left (drop the entry)", rel))
+		case actual < tolerated:
+			stale = append(stale, fmt.Sprintf("%s: tolerates %d, only %d left (lower the entry)", rel, tolerated, actual))
+		}
+	}
+	sort.Strings(stale)
+	if len(stale) > 0 {
+		t.Errorf("tmuxSocketGuardLegacy is stale and only ever shrinks:\n  %s", strings.Join(stale, "\n  "))
+	}
+}
+
+// tmuxSocketGuardScanFiles returns every repo-relative path this guard owns:
+// all *_test.go outside the skipped trees, plus the isolation mechanism
+// itself. Paths are sorted so a failure reads the same way twice.
+func tmuxSocketGuardScanFiles(root string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if tmuxSocketGuardSkipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, rel)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, tmuxSocketGuardExtraFiles...)
+	sort.Strings(files)
+	return files, nil
 }
 
 type unsocketedKill struct {

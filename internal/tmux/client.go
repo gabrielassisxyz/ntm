@@ -455,6 +455,17 @@ func buildRemoteShellCommand(command string, args ...string) string {
 	return strings.Join(parts, " ")
 }
 
+// socketArgs prefixes args with this client's explicit socket, for the two
+// local paths that build their own exec.Cmd instead of going through
+// runLocalContext. Without it a socket-pinned client still reaches the
+// environment's default server for those commands.
+func (c *Client) socketArgs(args ...string) []string {
+	if c == nil || c.Socket == "" {
+		return args
+	}
+	return append([]string{"-S", c.Socket}, args...)
+}
+
 func runLocalContext(ctx context.Context, socket string, args ...string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
