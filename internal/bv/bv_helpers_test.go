@@ -499,8 +499,8 @@ func TestCheckDrift_EarlyValidation(t *testing.T) {
 				t.Fatalf("Message = %q, want contains %q", res.Message, "project directory does not exist")
 			}
 		} else {
-			if !strings.Contains(res.Message, "bv not installed") {
-				t.Fatalf("Message = %q, want contains %q", res.Message, "bv not installed")
+			if !strings.Contains(res.Message, "bv is not available") {
+				t.Fatalf("Message = %q, want contains %q", res.Message, "bv is not available")
 			}
 		}
 	})
@@ -518,8 +518,8 @@ func TestCheckDrift_EarlyValidation(t *testing.T) {
 				t.Fatalf("Message = %q, want contains %q", res.Message, "no .beads directory")
 			}
 		} else {
-			if !strings.Contains(res.Message, "bv not installed") {
-				t.Fatalf("Message = %q, want contains %q", res.Message, "bv not installed")
+			if !strings.Contains(res.Message, "bv is not available") {
+				t.Fatalf("Message = %q, want contains %q", res.Message, "bv is not available")
 			}
 		}
 	})

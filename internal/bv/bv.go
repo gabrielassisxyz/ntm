@@ -27,8 +27,16 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 )
 
-// ErrNotInstalled indicates bv is not available
-var ErrNotInstalled = errors.New("bv is not installed")
+// ErrNotInstalled indicates bv could not be resolved for execution. The lookup
+// searches PATH and nothing else, so this never means "absent from the machine":
+// a bv installed outside the calling process's PATH produces exactly this error.
+var ErrNotInstalled = errors.New("bv is not available")
+
+// ErrNotOnPATH and ErrNotExecutable are the two conditions a PATH lookup can
+// actually tell apart. Both wrap ErrNotInstalled, so callers that only care
+// whether bv is usable keep working unchanged.
+var ErrNotOnPATH = errors.New("bv was not found on PATH")
+var ErrNotExecutable = errors.New("bv was found on PATH but is not executable")
 
 // ErrNoBaseline indicates no baseline exists for drift checking
 var ErrNoBaseline = errors.New("no baseline found")
@@ -99,10 +107,70 @@ func workspaceBDMutex(dir string) *workspaceBDGate {
 	return mu
 }
 
-// IsInstalled checks if bv is available in PATH
+// IsInstalled reports whether bv can be executed from this process's PATH.
+// Prefer lookupBV when the caller surfaces the failure to an operator: this
+// returns a bare bool and therefore discards which condition actually held.
 func IsInstalled() bool {
-	_, err := exec.LookPath("bv")
+	_, err := lookupBV()
 	return err == nil
+}
+
+// lookupBV resolves bv on PATH and, on failure, returns an error naming the
+// condition that actually holds along with the PATH it searched. Operators hit
+// this from environments with a narrower PATH than their shell (a systemd user
+// unit, for one), where "not installed" is the wrong diagnosis and sends them
+// to the wrong machine state entirely.
+//
+// The lookup searches PATH and nothing else, so it never learns whether bv
+// exists somewhere off that PATH, and none of the messages below claims to.
+func lookupBV() (string, error) {
+	resolved, err := exec.LookPath("bv")
+	if err == nil {
+		return resolved, nil
+	}
+	searched := os.Getenv("PATH")
+
+	// A relative PATH entry resolves but is refused, and reporting that as
+	// "missing" would send the operator looking for a binary they already have.
+	if errors.Is(err, exec.ErrDot) {
+		return "", fmt.Errorf("%w: bv resolved to %q through a relative PATH entry, which Go refuses to execute (searched PATH: %s): %w",
+			ErrNotInstalled, resolved, searched, err)
+	}
+
+	// Go's unix LookPath collapses every per-candidate failure into ErrNotFound
+	// (see findExecutable in GOROOT/src/os/exec/lp_unix.go), so a bv that is
+	// present but not executable is indistinguishable from an absent one in err
+	// alone. Re-walking the same PATH entries recovers the distinction; it is
+	// bounded by PATH and is not a filesystem scan.
+	if blocked := firstNonExecutableOnPATH(searched, "bv"); blocked != "" {
+		return "", fmt.Errorf("%w: %w: %s (searched PATH: %s)",
+			ErrNotInstalled, ErrNotExecutable, blocked, searched)
+	}
+
+	if errors.Is(err, exec.ErrNotFound) {
+		return "", fmt.Errorf("%w: %w (searched PATH: %s). If bv is installed outside that PATH, add its directory to PATH; if it is not present anywhere, install it with: go install github.com/Dicklesworthstone/beads_viewer@latest",
+			ErrNotInstalled, ErrNotOnPATH, searched)
+	}
+	return "", fmt.Errorf("%w: resolving bv on PATH failed (searched PATH: %s): %w", ErrNotInstalled, searched, err)
+}
+
+// firstNonExecutableOnPATH returns the first entry of path holding a regular
+// file called name. It is only ever consulted after LookPath has already
+// rejected every candidate, so any file it finds is one this process cannot
+// execute. Returns "" when no PATH entry holds such a file.
+func firstNonExecutableOnPATH(path, name string) string {
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		return candidate
+	}
+	return ""
 }
 
 // run executes bv with given args and returns stdout.
@@ -122,8 +190,8 @@ func runWithContextTimeout(parent context.Context, dir string, timeout time.Dura
 	if err := parent.Err(); err != nil {
 		return "", err
 	}
-	if !IsInstalled() {
-		return "", ErrNotInstalled
+	if _, err := lookupBV(); err != nil {
+		return "", err
 	}
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -323,10 +391,10 @@ func GetRecipes(dir string) (*RecipesResponse, error) {
 // CheckDrift checks project drift from baseline
 // Returns DriftResult with status and message
 func CheckDrift(dir string) DriftResult {
-	if !IsInstalled() {
+	if _, err := lookupBV(); err != nil {
 		return DriftResult{
 			Status:  DriftNoBaseline,
-			Message: "bv not installed",
+			Message: err.Error(),
 		}
 	}
 
