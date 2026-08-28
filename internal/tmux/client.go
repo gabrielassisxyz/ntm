@@ -92,6 +92,15 @@ const (
 type Client struct {
 	Remote string // "user@host" or empty for local
 
+	// Socket, when non-empty, pins every local command this client issues to
+	// an explicit `-S <path>` rather than letting tmux resolve its default
+	// socket from the TMUX_TMPDIR environment variable. Production code
+	// leaves this empty (today's behavior, unchanged); test code that owns
+	// a private tmux server sets it via NewClientWithSocket so containment
+	// survives TMUX_TMPDIR being unset, overwritten, or inherited wrongly.
+	// It has no effect when Remote is set.
+	Socket string
+
 	// captureBackpressure keeps the most recent capture attempt for each pane
 	// so runtime overload snapshots are based on live tmux activity.
 	captureBackpressure *captureBackpressureTracker
@@ -106,6 +115,18 @@ type Client struct {
 func NewClient(remote string) *Client {
 	return &Client{
 		Remote:              remote,
+		captureBackpressure: newCaptureBackpressureTracker(),
+	}
+}
+
+// NewClientWithSocket creates a local tmux client pinned to an explicit
+// socket path. Every command it issues carries `-S socket`, so it never
+// falls back to the environment's default tmux socket regardless of what
+// TMUX_TMPDIR holds. Intended for test code that starts and owns its own
+// isolated tmux server.
+func NewClientWithSocket(socket string) *Client {
+	return &Client{
+		Socket:              socket,
 		captureBackpressure: newCaptureBackpressureTracker(),
 	}
 }
@@ -296,7 +317,7 @@ func (c *Client) RunContext(ctx context.Context, args ...string) (string, error)
 	var out string
 	var err error
 	if c.Remote == "" {
-		out, err = runLocalContext(ctx, args...)
+		out, err = runLocalContext(ctx, c.Socket, args...)
 	} else {
 		// Remote execution via ssh
 		remoteCmd := buildRemoteShellCommand("tmux", args...)
@@ -434,9 +455,13 @@ func buildRemoteShellCommand(command string, args ...string) string {
 	return strings.Join(parts, " ")
 }
 
-func runLocalContext(ctx context.Context, args ...string) (string, error) {
+func runLocalContext(ctx context.Context, socket string, args ...string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if socket != "" {
+		// -S must precede the tmux subcommand.
+		args = append([]string{"-S", socket}, args...)
 	}
 	binary := BinaryPath()
 	cmd := exec.CommandContext(ctx, binary, args...)

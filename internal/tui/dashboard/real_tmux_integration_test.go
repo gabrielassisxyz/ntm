@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
+	"github.com/Dicklesworthstone/ntm/tests/testutil/tmuxenv"
 )
 
 func TestRealTmuxDashboardE2E(t *testing.T) {
@@ -23,14 +24,18 @@ func TestRealTmuxDashboardE2E(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("TMUX", "")
-	t.Setenv("TMUX_TMPDIR", testutil.ShortTmuxTempDir(t))
+	tmuxRoot := testutil.ShortTmuxTempDir(t)
+	t.Setenv("TMUX_TMPDIR", tmuxRoot)
 
 	projectDir := t.TempDir()
 	session := fmt.Sprintf("ntm_tui_e2e_%d", time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancelCleanup()
-		if _, err := tmux.NewClient("").RunContext(cleanupCtx, "kill-server"); err != nil &&
+		// Explicit -S: this cleanup must not depend on TMUX_TMPDIR alone to
+		// find the server it is allowed to kill.
+		client := tmux.NewClientWithSocket(tmuxenv.DefaultSocketPath(tmuxRoot))
+		if _, err := client.RunContext(cleanupCtx, "kill-server"); err != nil &&
 			tmux.ClassifyCommandError(err).Kind != tmux.CommandErrorNoServer {
 			t.Errorf("stop isolated tmux server: %v", err)
 		}

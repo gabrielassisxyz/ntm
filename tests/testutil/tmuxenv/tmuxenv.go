@@ -31,6 +31,16 @@ const (
 	Pattern = "ntm-tmux-test-*"
 )
 
+// DefaultSocketPath returns the socket path tmux resolves to under root when
+// invoked with neither -L nor -S: $root/tmux-$UID/default (tmux(1)). Test
+// code that starts or stops a server through TMUX_TMPDIR alone can pass this
+// back explicitly as -S, so that specific invocation stops depending on the
+// environment variable too, without needing a second, differently-addressed
+// server.
+func DefaultSocketPath(root string) string {
+	return filepath.Join(root, fmt.Sprintf("tmux-%d", os.Getuid()), "default")
+}
+
 // Owned reports whether TMUX_TMPDIR is set and its base name matches
 // Pattern. NTM_TEST_TMUX_ENV_OWNED is trustworthy only when Owned is also
 // true; the flag by itself proves nothing about who set TMUX_TMPDIR.

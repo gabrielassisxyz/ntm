@@ -53,11 +53,18 @@ func TestMain(m *testing.M) {
 		}
 	}
 	cleanupBinary := findInstalledTmuxBinaryPath()
+	// socketPath is the same default socket TMUX_TMPDIR alone would resolve
+	// to; passing it back explicitly via -S means this file's own
+	// start-server/kill-server invocations do not depend on that
+	// environment variable either, even though the rest of this package's
+	// tests (via DefaultClient) still reach the server through it.
+	socketPath := tmuxenv.DefaultSocketPath(tmuxRoot)
 	if cleanupBinary != "" {
 		startupCtx, cancelStartup := context.WithTimeout(context.Background(), 8*time.Second)
 		cmd := exec.CommandContext(
 			startupCtx,
 			cleanupBinary,
+			"-S", socketPath,
 			"start-server", ";", "set-option", "-s", "exit-empty", "off",
 		)
 		cmd.Env = isolatedTmuxTestEnvironment(tmuxRoot)
@@ -80,7 +87,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if cleanupBinary != "" {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 8*time.Second)
-		cmd := exec.CommandContext(cleanupCtx, cleanupBinary, "kill-server")
+		cmd := exec.CommandContext(cleanupCtx, cleanupBinary, "-S", socketPath, "kill-server")
 		cmd.Env = isolatedTmuxTestEnvironment(tmuxRoot)
 		output, cleanupErr := cmd.CombinedOutput()
 		contextErr := cleanupCtx.Err()

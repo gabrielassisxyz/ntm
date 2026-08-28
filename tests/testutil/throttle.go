@@ -299,7 +299,10 @@ func IsolateTmuxTestProcess() (func() error, error) {
 		cleanupOnce.Do(func() {
 			if cleanupBinary != "" {
 				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-				cmd := exec.CommandContext(ctx, cleanupBinary, "kill-server")
+				// -S pins the kill to this root's own socket explicitly; the
+				// isolated TMUX_TMPDIR below is kept as a second, redundant
+				// signal rather than the only one.
+				cmd := exec.CommandContext(ctx, cleanupBinary, "-S", tmuxenv.DefaultSocketPath(dir), "kill-server")
 				cmd.Env = isolatedTmuxEnvironment(dir)
 				output, err := cmd.CombinedOutput()
 				contextErr := ctx.Err()
