@@ -251,9 +251,27 @@ func IsolateTmuxTestProcess() (func() error, error) {
 		)
 	}
 
+	// Reap what an interrupted earlier run could not. Neither TestMain's
+	// teardown nor t.Cleanup runs when the test binary is killed, and the tmux
+	// server it started outlives it, so the only place this can be collected is
+	// the start of a later run. Never fatal: a sweep that cannot reap is a
+	// worse leak, not a broken test run.
+	if reaped, err := tmuxenv.SweepStaleRoots(findSystemTmuxBinary()); err != nil {
+		fmt.Fprintf(os.Stderr, "tmux test isolation: could not reap every stale root: %v\n", err)
+	} else if reaped > 0 {
+		fmt.Fprintf(os.Stderr, "tmux test isolation: reaped %d stale tmux test root(s) from an earlier run\n", reaped)
+	}
+
 	dir, err := CreateShortTmuxTempDir()
 	if err != nil {
 		return nil, err
+	}
+
+	// Claim the root before anything can start a server inside it, so a later
+	// sweep can tell this run's live root from an abandoned one.
+	if err := tmuxenv.WriteOwner(dir); err != nil {
+		removeErr := os.RemoveAll(dir)
+		return nil, errors.Join(fmt.Errorf("claim tmux test root: %w", err), removeErr)
 	}
 
 	settings := []struct {
