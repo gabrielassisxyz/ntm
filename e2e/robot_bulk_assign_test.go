@@ -803,7 +803,7 @@ func TestE2ERobotBulkAssignMissingDependenciesAreTyped(t *testing.T) {
 		pathDir := t.TempDir()
 		linkTool(t, pathDir, tmuxPath, "tmux")
 		env := mergeRobotProcessEnv(fixture.env, map[string]string{"PATH": pathDir})
-		assertMissing(t, fixture, env, "bv is not installed")
+		assertMissing(t, fixture, env, "bv was not found on PATH", pathDir)
 	})
 
 	t.Run("br", func(t *testing.T) {

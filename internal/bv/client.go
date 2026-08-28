@@ -364,8 +364,8 @@ func (c *BVClient) getTriage() (*TriageResponse, error) {
 
 // fetchTriage executes bv --robot-triage and parses the response.
 func (c *BVClient) fetchTriage(dir string) (*TriageResponse, error) {
-	if !IsInstalled() {
-		return nil, fmt.Errorf("%w: bv is not installed. Install it with: go install github.com/Dicklesworthstone/beads_viewer@latest", ErrNotInstalled)
+	if _, err := lookupBV(); err != nil {
+		return nil, err
 	}
 
 	output, err := runWithTimeout(dir, c.Timeout, "--robot-triage")

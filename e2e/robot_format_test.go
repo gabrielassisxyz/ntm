@@ -3161,8 +3161,11 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 			"--strategy=balanced",
 		)
 		envelope := assertAssignFailure(t, process, "DEPENDENCY_MISSING")
-		if !strings.Contains(envelope.Error, "bv is not installed") {
+		if !strings.Contains(envelope.Error, "bv was not found on PATH") {
 			t.Fatalf("missing bv diagnostic=%q", envelope.Error)
+		}
+		if !strings.Contains(envelope.Error, pathDir) {
+			t.Fatalf("missing bv diagnostic does not name the PATH it searched: %q", envelope.Error)
 		}
 	})
 
