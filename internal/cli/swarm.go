@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/huh"
@@ -156,6 +157,7 @@ func newSwarmCmd() *cobra.Command {
 		promptFile      string
 		waitReady       bool
 		readyTimeout    int
+		noIdentityEnv   bool
 	)
 
 	cmd := &cobra.Command{
@@ -190,6 +192,7 @@ Examples:
 				PromptFile:      promptFile,
 				WaitReady:       waitReady,
 				ReadyTimeout:    readyTimeout,
+				NoIdentityEnv:   noIdentityEnv,
 			})
 		},
 	}
@@ -219,6 +222,7 @@ Examples:
 	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "File containing initial prompt (mutually exclusive with --prompt)")
 	cmd.Flags().BoolVar(&waitReady, "wait-ready", false, "Wait for all agents to reach idle/ready state before returning")
 	cmd.Flags().IntVar(&readyTimeout, "ready-timeout", 30, "Timeout in seconds for --wait-ready (default: 30)")
+	cmd.Flags().BoolVar(&noIdentityEnv, "no-identity-env", false, "Skip setting GIT_IDENTITY_ENABLED/AGENT_NAME in swarm panes (disables MCP Agent Mail's reservation guard there); same as NTM_SWARM_IDENTITY_ENV=0")
 	cmd.PersistentFlags().BoolVar(&autoRotate, "auto-rotate-accounts", defaultAutoRotate, "Automatically rotate accounts on usage limit hit (requires caam)")
 	cmd.PersistentFlags().BoolVar(&forceGlobalAuth, "force-global-auth-clobber", false, "DANGEROUS: permit automatic global ~/.codex/auth.json rotation even when live Codex panes share global auth or caam lacks the safe-restore capability; bypasses account pins (#194)")
 
@@ -245,6 +249,7 @@ type swarmOptions struct {
 	PromptFile      string
 	WaitReady       bool
 	ReadyTimeout    int
+	NoIdentityEnv   bool
 }
 
 // SwarmPlanOutput is the JSON output format for swarm plan
@@ -261,6 +266,11 @@ type SwarmPlanOutput struct {
 	Allocations     []AllocationOutput `json:"allocations"`
 	Sessions        []SessionOutput    `json:"sessions"`
 	DryRun          bool               `json:"dry_run"`
+	// Warnings carries non-fatal, operator-visible notices — e.g. that
+	// --no-identity-env disabled the coordination-identity layer for this
+	// launch (bd-fug). A swarm that disables its own exclusion layer must
+	// say so out loud rather than staying silent about it.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type AllocationOutput struct {
@@ -392,6 +402,21 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 		)
 	}
 
+	// The coordination-identity layer (GIT_IDENTITY_ENABLED/AGENT_NAME) is
+	// opt-out, not opt-in: on by default, skipped only when the operator
+	// says so explicitly. Validate before anything is created — a plan
+	// that cannot give every pane a distinct, non-empty AGENT_NAME is
+	// refused here, beside the guards above, rather than discovered after
+	// tmux sessions already exist (bd-fug).
+	identityOptOut := swarmIdentityEnvOptOut(opts.NoIdentityEnv)
+	if err := validateSwarmIdentityEnv(plan, identityOptOut); err != nil {
+		if opts.JSONOutput {
+			return emitJSONFailureEnvelopeWithCause(swarmIdentityConflictOutput(opts, err), err)
+		}
+		return err
+	}
+	plan.IdentityEnvEnabled = !identityOptOut
+
 	if opts.OutputPath != "" {
 		if err := writePlanToFile(plan, opts.OutputPath); err != nil {
 			return fmt.Errorf("write plan: %w", err)
@@ -401,6 +426,15 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 
 	// Build output
 	out := buildSwarmPlanOutput(plan, opts.DryRun)
+	// A swarm that disables its own exclusion layer must say so out loud
+	// rather than staying silent about it — swarmIdentityWarnings feeds
+	// both the plain-text path (printSwarmPlan) and the JSON path
+	// (printSwarmJSON encodes out.Warnings directly), so the two carry the
+	// same statement.
+	out.Warnings = append(out.Warnings, swarmIdentityWarnings(identityOptOut)...)
+	if identityOptOut {
+		logger.Warn("[swarm] identity_env_disabled", "reason", "opt_out")
+	}
 
 	if opts.JSONOutput {
 		return printSwarmJSON(out)
@@ -523,6 +557,100 @@ func resolveSwarmInitialPrompt(prompt, promptFile string) (resolved string, sour
 	return "", "", "", nil
 }
 
+// swarmIdentityOptOutMessage is surfaced (plain output and the JSON
+// envelope's "warnings") whenever the coordination-identity layer is
+// disabled, so an operator disabling their own exclusion layer has to see
+// it said out loud rather than the swarm going quiet about it (bd-fug).
+const swarmIdentityOptOutMessage = "coordination-identity environment disabled (--no-identity-env / NTM_SWARM_IDENTITY_ENV=0): GIT_IDENTITY_ENABLED and AGENT_NAME will not be set in this swarm's panes, so MCP Agent Mail's reservation guard will pass every commit there unchecked"
+
+// swarmIdentityWarnings returns the "warnings" entries this launch's output
+// should carry for its coordination-identity state: one statement when the
+// layer is disabled, none when it is on. Factored out of runSwarm so both
+// the plain-text path (printSwarmPlan) and the JSON path (out.Warnings,
+// encoded verbatim by printSwarmJSON) are provably fed by the same value.
+func swarmIdentityWarnings(optOut bool) []string {
+	if !optOut {
+		return nil
+	}
+	return []string{swarmIdentityOptOutMessage}
+}
+
+// swarmIdentityEnvOptOut combines the --no-identity-env flag with the
+// NTM_SWARM_IDENTITY_ENV=0 environment override. The env var takes ntm's
+// own NTM_<SECTION>_<FIELD> naming because it is ntm's knob; the two
+// variables it gates (GIT_IDENTITY_ENABLED, AGENT_NAME) are not, and keep
+// their unprefixed, guard-owned names everywhere else (bd-fug). Unset, or
+// any value other than "0"/"false", leaves the default untouched: the
+// layer is opt-out, not opt-in.
+func swarmIdentityEnvOptOut(flag bool) bool {
+	if flag {
+		return true
+	}
+	v := strings.TrimSpace(os.Getenv("NTM_SWARM_IDENTITY_ENV"))
+	return v == "0" || strings.EqualFold(v, "false")
+}
+
+// validateSwarmIdentityEnv checks, before any tmux session exists, that
+// plan can give every pane a distinct, non-empty AGENT_NAME. It is a pure
+// function of the plan — no tmux involved — so it runs beside the
+// --sessions-per-type / --panes-per-session guards in runSwarm, ahead of
+// discoverProjects and every side effect that follows it.
+//
+// optOut is --no-identity-env / NTM_SWARM_IDENTITY_ENV=0: when set, the
+// coordination-identity layer is skipped entirely and this always
+// succeeds, since there is nothing left to validate.
+func validateSwarmIdentityEnv(plan *swarm.SwarmPlan, optOut bool) error {
+	if optOut || plan == nil {
+		return nil
+	}
+	claimedBy := make(map[string]string, plan.TotalAgents)
+	for _, sess := range plan.Sessions {
+		for _, pane := range sess.Panes {
+			location := fmt.Sprintf("session %q pane %d", sess.Name, pane.Index)
+			name := swarm.DerivePaneAgentName(sess.Name, pane.Index)
+			if name == "" {
+				return fmt.Errorf("swarm identity: %s would get an empty AGENT_NAME; refusing to launch an unequipped pane", location)
+			}
+			if prior, dup := claimedBy[name]; dup {
+				return fmt.Errorf(
+					"swarm identity: %s and %s would both get AGENT_NAME=%q; the reservation guard and the tracker's claim guard both depend on a distinct identity per pane",
+					prior, location, name,
+				)
+			}
+			claimedBy[name] = location
+		}
+	}
+	return nil
+}
+
+// swarmIdentityConflictErrorCode and swarmIdentityConflictHint are the
+// robot-mode error_code/hint validateSwarmIdentityEnv's failure carries,
+// following robot.NewErrorResponse and the exit contract in AGENTS.md
+// (bd-fug). Named constants so a test can assert the exact code rather than
+// a string literal that could silently drift from what runSwarm emits.
+const (
+	swarmIdentityConflictErrorCode = "SWARM_IDENTITY_CONFLICT"
+	swarmIdentityConflictHint      = "Every pane needs a distinct, non-empty AGENT_NAME; adjust --sessions-per-type/--panes-per-session so panes don't collide, or pass --no-identity-env to skip the coordination-identity layer"
+)
+
+// swarmIdentityConflictOutput builds the JSON failure envelope for a
+// validateSwarmIdentityEnv error. Factored out of runSwarm so its shape —
+// robot.NewErrorResponse with SWARM_IDENTITY_CONFLICT and a hint — is
+// directly testable without exercising all of runSwarm's project
+// discovery and tmux plumbing.
+func swarmIdentityConflictOutput(opts swarmOptions, cause error) SwarmPlanOutput {
+	response := robot.NewErrorResponse(cause, swarmIdentityConflictErrorCode, swarmIdentityConflictHint)
+	response.OutputFormat = robot.FormatJSON.String()
+	response.Meta = robot.NewResponseMeta("swarm").WithExitCode(1)
+	return SwarmPlanOutput{
+		RobotResponse: response,
+		ScanDir:       opts.ScanDir,
+		Allocations:   []AllocationOutput{},
+		Sessions:      []SessionOutput{},
+		DryRun:        opts.DryRun,
+	}
+}
+
 // discoverProjects finds projects with bead counts using BeadScanner
 func discoverProjects(scanDir string, explicitProjects []string) ([]swarm.ProjectBeadCount, error) {
 	var opts []swarm.BeadScannerOption
@@ -612,6 +740,10 @@ func printSwarmPlan(out SwarmPlanOutput) {
 	printSwarmHeader("Sessions")
 	for _, sess := range out.Sessions {
 		fmt.Printf("  %s (%d panes)\n", sess.Name, sess.PaneCount)
+	}
+
+	for _, w := range out.Warnings {
+		output.PrintWarning(w)
 	}
 }
 
