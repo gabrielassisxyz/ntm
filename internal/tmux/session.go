@@ -902,17 +902,45 @@ func (c *Client) CreateSessionWithHistoryLimit(name, directory string, historyLi
 // CreateSessionWithHistoryLimitContext creates a new tmux session with a
 // custom scrollback limit and cancellation support.
 func (c *Client) CreateSessionWithHistoryLimitContext(ctx context.Context, name, directory string, historyLimit int) error {
+	return c.CreateSessionWithEnvContext(ctx, name, directory, historyLimit, nil, nil)
+}
+
+// CreateSessionWithEnvContext creates a new tmux session like
+// CreateSessionWithHistoryLimitContext, additionally equipping the pane
+// tmux creates for it with environment variables that a shell forked by an
+// already-running tmux server would not otherwise inherit (bd-fug).
+//
+// sessionEnv is passed as `-e KEY=VALUE` on the new-session command AND
+// persisted with `set-environment -t <name>`, so a pane split from this
+// session later — via SplitWindowWithEnvContext or plain SplitWindow —
+// still inherits it, even though the tmux server may predate this call and
+// hold none of these variables in its own environment table. paneEnv is
+// passed as `-e KEY=VALUE` only, scoped to this one pane and never
+// persisted at the session level: a value that must differ per pane (an
+// AGENT_NAME, say) would otherwise leak into every pane split later.
+func (c *Client) CreateSessionWithEnvContext(ctx context.Context, name, directory string, historyLimit int, sessionEnv, paneEnv map[string]string) error {
 	if ctx == nil {
 		return errors.New("tmux session creation context is required")
 	}
 	if err := ValidateSessionName(name); err != nil {
 		return fmt.Errorf("invalid session name: %w", err)
 	}
-	if err := c.RunSilentContext(ctx, "new-session", "-d", "-s", name, "-c", directory); err != nil {
+	args := []string{"new-session", "-d", "-s", name, "-c", directory}
+	args = append(args, envFlagArgs(sessionEnv)...)
+	args = append(args, envFlagArgs(paneEnv)...)
+	if err := c.RunSilentContext(ctx, args...); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("tmux session %q was created before cancellation: %w", name, err)
+	}
+	for _, key := range sortedEnvKeys(sessionEnv) {
+		if err := c.RunSilentContext(ctx, "set-environment", "-t", name, key, sessionEnv[key]); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("tmux session %q was created before cancellation: %w", name, ctxErr)
+			}
+			return fmt.Errorf("tmux session %q was created but persisting session environment %q failed: %w", name, key, err)
+		}
 	}
 	if historyLimit > 0 {
 		// Set history-limit on the session so all panes (including those created
@@ -925,6 +953,65 @@ func (c *Client) CreateSessionWithHistoryLimitContext(ctx context.Context, name,
 		}
 	}
 	return nil
+}
+
+// envFlagArgs renders env as sorted "-e KEY=VALUE" pairs so the resulting
+// argv order — and therefore any test assertion against it — is
+// deterministic rather than following Go's randomized map iteration.
+func envFlagArgs(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := sortedEnvKeys(env)
+	args := make([]string, 0, len(keys)*2)
+	for _, key := range keys {
+		args = append(args, "-e", key+"="+env[key])
+	}
+	return args
+}
+
+func sortedEnvKeys(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// SessionEnvironmentHasContext reports whether the session's own
+// environment table — as read by `tmux show-environment -t <session>`, not
+// os.Getenv in this process — carries key set to exactly value. This is the
+// only way to verify a session-scoped variable such as
+// GIT_IDENTITY_ENABLED, because the pane may have been forked by a tmux
+// server that predates this process and never inherited its caller's
+// environment (bd-fug).
+func (c *Client) SessionEnvironmentHasContext(ctx context.Context, session, key, value string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out, err := c.RunContext(ctx, "show-environment", "-t", session)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "-") {
+			// A leading "-" marks a variable tmux knows is unset; never a value.
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if k == key {
+			return v == value, nil
+		}
+	}
+	return false, nil
 }
 
 // CreateSession creates a new tmux session (default client)
@@ -1351,6 +1438,16 @@ func (c *Client) SplitWindow(session string, directory string) (string, error) {
 // SplitWindowContext creates a new pane in the session with cancellation
 // support across window discovery, pane creation, and layout selection.
 func (c *Client) SplitWindowContext(ctx context.Context, session string, directory string) (string, error) {
+	return c.SplitWindowWithEnvContext(ctx, session, directory, nil)
+}
+
+// SplitWindowWithEnvContext creates a new pane like SplitWindowContext, but
+// additionally passes paneEnv as `-e KEY=VALUE` on the split-window command
+// that creates it — scoped to that one pane, exactly like the paneEnv
+// argument of CreateSessionWithEnvContext (bd-fug). A session-scoped
+// variable set via that function's sessionEnv does not need to be repeated
+// here: split-window panes inherit the session environment automatically.
+func (c *Client) SplitWindowWithEnvContext(ctx context.Context, session string, directory string, paneEnv map[string]string) (string, error) {
 	if ctx == nil {
 		return "", errors.New("tmux split window context is required")
 	}
@@ -1362,7 +1459,10 @@ func (c *Client) SplitWindowContext(ctx context.Context, session string, directo
 	target := fmt.Sprintf("%s:%d", session, firstWin)
 
 	// Split and get the new pane ID
-	paneID, err := c.RunContext(ctx, "split-window", "-t", target, "-c", directory, "-P", "-F", "#{pane_id}")
+	args := []string{"split-window", "-t", target, "-c", directory}
+	args = append(args, envFlagArgs(paneEnv)...)
+	args = append(args, "-P", "-F", "#{pane_id}")
+	paneID, err := c.RunContext(ctx, args...)
 	if err != nil {
 		return "", err
 	}

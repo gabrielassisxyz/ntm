@@ -1,6 +1,10 @@
 package swarm
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // ProjectBeadCount represents a project and its open bead count.
 type ProjectBeadCount struct {
@@ -56,6 +60,15 @@ type SwarmPlan struct {
 
 	// Ensemble config for ensemble-aware session creation (optional).
 	Ensemble *EnsemblePlan `json:"ensemble,omitempty"`
+
+	// IdentityEnvEnabled controls whether CreateSessions equips every pane
+	// with GIT_IDENTITY_ENABLED and a distinct AGENT_NAME, so MCP Agent
+	// Mail's reservation guard is armed in the panes ntm creates (bd-fug).
+	// The CLI sets this from --no-identity-env / NTM_SWARM_IDENTITY_ENV
+	// before Execute runs; a plan built directly (as most orchestrator
+	// tests do) defaults to false, which reproduces today's behavior
+	// exactly — no session gets the extra -e flags.
+	IdentityEnvEnabled bool `json:"identity_env_enabled"`
 }
 
 // EnsemblePlan describes an ensemble configuration embedded in a swarm plan.
@@ -82,6 +95,31 @@ type PaneSpec struct {
 	AgentType  string `json:"agent_type"`
 	AgentIndex int    `json:"agent_index"` // Agent number within project
 	LaunchCmd  string `json:"launch_cmd"`  // "cc", "cod", or "gmi"
+}
+
+// GitIdentityEnabledVar and AgentNameVar are the two environment variables
+// MCP Agent Mail's pre-commit reservation guard reads. They are not ntm
+// config knobs: ntm's only responsibility is to propagate them into the
+// panes it creates and to verify that propagation succeeded (bd-fug).
+const (
+	GitIdentityEnabledVar = "GIT_IDENTITY_ENABLED"
+	AgentNameVar          = "AGENT_NAME"
+)
+
+// DerivePaneAgentName returns the AGENT_NAME a swarm pane is equipped
+// with: deterministic and distinct across every pane of a launch by
+// construction, so the reservation guard and the tracker's claim guard can
+// tell one agent's actions from another's. paneIndex is the pane's 1-based
+// PaneSpec.Index.
+//
+// Returns "" for an invalid session name or pane index — a launch must
+// treat that as a refusal, never as a pane silently left unequipped
+// (bd-fug).
+func DerivePaneAgentName(sessionName string, paneIndex int) string {
+	if strings.TrimSpace(sessionName) == "" || paneIndex <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s-p%d", sessionName, paneIndex)
 }
 
 // SwarmState tracks the runtime state of a running swarm.

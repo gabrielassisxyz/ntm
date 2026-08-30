@@ -116,7 +116,7 @@ func (o *SessionOrchestrator) CreateSessions(plan *SwarmPlan) (*OrchestrationRes
 			time.Sleep(o.StaggerDelay)
 		}
 
-		sessionResult := o.createSession(client, spec)
+		sessionResult := o.createSession(client, spec, plan.IdentityEnvEnabled)
 		result.Sessions = append(result.Sessions, sessionResult)
 
 		if sessionResult.Error != nil {
@@ -133,7 +133,13 @@ func (o *SessionOrchestrator) CreateSessions(plan *SwarmPlan) (*OrchestrationRes
 }
 
 // createSession creates a single tmux session with its panes.
-func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpec) CreateSessionResult {
+//
+// identityEnvEnabled equips every pane with GIT_IDENTITY_ENABLED (session-
+// scoped) and a distinct AGENT_NAME (pane-scoped), and refuses the session
+// if the tmux server it landed on cannot be verified to carry
+// GIT_IDENTITY_ENABLED afterward (bd-fug). false reproduces the pre-bd-fug
+// behavior exactly.
+func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpec, identityEnvEnabled bool) CreateSessionResult {
 	result := CreateSessionResult{
 		SessionSpec: spec,
 		SessionName: spec.Name,
@@ -158,8 +164,34 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 		directory = spec.Panes[0].Project
 	}
 
-	// Create the session
-	if err := client.CreateSession(spec.Name, directory); err != nil {
+	if identityEnvEnabled {
+		firstPaneIndex := 1
+		if len(spec.Panes) > 0 {
+			firstPaneIndex = spec.Panes[0].Index
+		}
+		sessionEnv := map[string]string{GitIdentityEnabledVar: "1"}
+		paneEnv := map[string]string{}
+		if name := DerivePaneAgentName(spec.Name, firstPaneIndex); name != "" {
+			paneEnv[AgentNameVar] = name
+		}
+		if err := client.CreateSessionWithEnvContext(context.Background(), spec.Name, directory, tmux.DefaultHistoryLimit, sessionEnv, paneEnv); err != nil {
+			result.Error = fmt.Errorf("failed to create session %q: %w", spec.Name, err)
+			return result
+		}
+		// The session-environment read-back can only happen after
+		// new-session returns, so the refusal lands here — before GetPanes,
+		// before any pane title is set, before any pane is split, and long
+		// before PromptInjector ever sends keys to this session.
+		ok, verr := client.SessionEnvironmentHasContext(context.Background(), spec.Name, GitIdentityEnabledVar, "1")
+		if verr != nil || !ok {
+			_ = client.KillSession(spec.Name)
+			result.Error = fmt.Errorf(
+				"swarm identity: session %q does not carry %s=1 in its own tmux environment after creation (verify error: %v); refusing to launch panes into an unguarded session",
+				spec.Name, GitIdentityEnabledVar, verr,
+			)
+			return result
+		}
+	} else if err := client.CreateSession(spec.Name, directory); err != nil {
 		result.Error = fmt.Errorf("failed to create session %q: %w", spec.Name, err)
 		return result
 	}
@@ -198,7 +230,17 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 		}
 
 		// Split the window to create a new pane
-		paneID, err := client.SplitWindow(spec.Name, paneDir)
+		var paneID string
+		var err error
+		if identityEnvEnabled {
+			paneEnv := map[string]string{}
+			if name := DerivePaneAgentName(spec.Name, paneSpec.Index); name != "" {
+				paneEnv[AgentNameVar] = name
+			}
+			paneID, err = client.SplitWindowWithEnvContext(context.Background(), spec.Name, paneDir, paneEnv)
+		} else {
+			paneID, err = client.SplitWindow(spec.Name, paneDir)
+		}
 		if err != nil {
 			slog.Warn("[SessionOrchestrator] split_window_failed",
 				"session", spec.Name,
