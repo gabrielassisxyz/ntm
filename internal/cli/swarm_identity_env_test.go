@@ -212,3 +212,46 @@ func TestSwarmIdentityConflictOutput_RobotModeShape(t *testing.T) {
 		t.Error("Allocations/Sessions must be present-but-empty arrays, not absent, per the JSON field semantics convention")
 	}
 }
+
+// TestApplySwarmIdentityEnv_RecordsTheLayerOnThePlan is the direction the
+// other tests in this file do not cover: they all prove the opt-out path
+// stays quiet and the conflict path refuses, and every one of them passes
+// with the layer switched off entirely. The plan's IdentityEnvEnabled is
+// what the orchestrator reads to decide whether a pane gets equipped at
+// all, so a launch that never sets it equips nothing while every other
+// assertion here stays green.
+func TestApplySwarmIdentityEnv_RecordsTheLayerOnThePlan(t *testing.T) {
+	tests := []struct {
+		name   string
+		optOut bool
+		want   bool
+	}{
+		{name: "default launch equips its panes", optOut: false, want: true},
+		{name: "opt-out launch equips nothing", optOut: true, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := planWithPaneIndices(map[string][]int{"cc_agents_1": {1, 2}})
+			if err := applySwarmIdentityEnv(plan, tt.optOut); err != nil {
+				t.Fatalf("applySwarmIdentityEnv returned %v, want nil for a valid plan", err)
+			}
+			if plan.IdentityEnvEnabled != tt.want {
+				t.Errorf("plan.IdentityEnvEnabled = %v, want %v", plan.IdentityEnvEnabled, tt.want)
+			}
+		})
+	}
+}
+
+// TestApplySwarmIdentityEnv_LeavesThePlanUnequippedOnConflict pins the
+// order of the two steps: a plan that fails validation must not be marked
+// as equipped on its way out, or a caller that ignored the error would
+// launch believing the layer is on.
+func TestApplySwarmIdentityEnv_LeavesThePlanUnequippedOnConflict(t *testing.T) {
+	plan := planWithPaneIndices(map[string][]int{"cc_agents_1": {1, 1}})
+	if err := applySwarmIdentityEnv(plan, false); err == nil {
+		t.Fatal("applySwarmIdentityEnv returned nil, want the duplicate-name conflict")
+	}
+	if plan.IdentityEnvEnabled {
+		t.Error("plan.IdentityEnvEnabled = true after a refused validation, want false")
+	}
+}

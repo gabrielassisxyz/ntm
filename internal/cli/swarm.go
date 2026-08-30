@@ -409,13 +409,12 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 	// refused here, beside the guards above, rather than discovered after
 	// tmux sessions already exist (bd-fug).
 	identityOptOut := swarmIdentityEnvOptOut(opts.NoIdentityEnv)
-	if err := validateSwarmIdentityEnv(plan, identityOptOut); err != nil {
+	if err := applySwarmIdentityEnv(plan, identityOptOut); err != nil {
 		if opts.JSONOutput {
 			return emitJSONFailureEnvelopeWithCause(swarmIdentityConflictOutput(opts, err), err)
 		}
 		return err
 	}
-	plan.IdentityEnvEnabled = !identityOptOut
 
 	if opts.OutputPath != "" {
 		if err := writePlanToFile(plan, opts.OutputPath); err != nil {
@@ -619,6 +618,22 @@ func validateSwarmIdentityEnv(plan *swarm.SwarmPlan, optOut bool) error {
 			}
 			claimedBy[name] = location
 		}
+	}
+	return nil
+}
+
+// applySwarmIdentityEnv validates the plan's identities and records on the
+// plan whether the launch equips its panes with them. The two steps live in
+// one function so the recording cannot be dropped without the validation
+// going with it: a launch whose plan reaches the orchestrator with
+// IdentityEnvEnabled false is a launch that silently equips nothing, which
+// looks exactly like a launch where the layer was never wired up (bd-fug).
+func applySwarmIdentityEnv(plan *swarm.SwarmPlan, optOut bool) error {
+	if err := validateSwarmIdentityEnv(plan, optOut); err != nil {
+		return err
+	}
+	if plan != nil {
+		plan.IdentityEnvEnabled = !optOut
 	}
 	return nil
 }
