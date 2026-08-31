@@ -24,6 +24,9 @@ const (
 	// StateError indicates an error condition was detected.
 	StateError AgentState = "ERROR"
 
+	// StateModal indicates agent is paused on an interactive modal or prompt requiring operator action.
+	StateModal AgentState = "MODAL"
+
 	// StateStalled indicates no output when activity was expected.
 	StateStalled AgentState = "STALLED"
 
@@ -39,6 +42,7 @@ const (
 	CategoryError      PatternCategory = "error"      // Error conditions
 	CategoryThinking   PatternCategory = "thinking"   // Processing indicators
 	CategoryCompletion PatternCategory = "completion" // Task completion signals
+	CategoryModal      PatternCategory = "modal"      // Interactive provider modals / prompts
 )
 
 // Pattern represents a single pattern for detecting agent states.
@@ -124,15 +128,27 @@ func defaultPatterns() []Pattern {
 		{Name: "gemini_prompt", RegexStr: `(?i)gemini\s*>?\s*$`, Agent: "gemini", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Gemini prompt"},
 		{Name: "gemini_triple_arrow", RegexStr: `>>>\s*$`, Agent: "gemini", State: StateWaiting, Category: CategoryIdle, Priority: 90, Description: "Gemini triple arrow prompt"},
 
+		// ==================
+		// MODAL / INTERACTIVE PROMPT PATTERNS (agent waiting on operator decision)
+		// ==================
+		// Provider quota / upgrade / model-switch confirmation modals (e.g. Codex)
+		// These must outrank generic error patterns so an on-screen interactive modal
+		// is classified as MODAL (needs operator choice) rather than ERROR (crashed/failed).
+		{Name: "codex_quota_modal", RegexStr: `(?i)(?:hit|reached)\s+your\s+(?:usage\s+)?limit.*(?:upgrade|switch\s+to|press\s+enter|confirm|esc\s+to)`, Agent: "codex", State: StateModal, Category: CategoryModal, Priority: 230, Description: "Codex provider usage limit / model switch confirmation modal"},
+		{Name: "provider_quota_modal", RegexStr: `(?i)(?:hit|reached)\s+your\s+(?:usage\s+)?limit.*(?:upgrade|switch\s+to|press\s+enter|confirm|esc\s+to)`, Agent: "*", State: StateModal, Category: CategoryModal, Priority: 225, Description: "Provider quota / upgrade / model switch modal"},
+		{Name: "model_switch_confirm_modal", RegexStr: `(?i)(?:switch\s+to|upgrade\s+to).*(?:press\s+enter\s+to\s+confirm|esc\s+to\s+cancel)`, Agent: "*", State: StateModal, Category: CategoryModal, Priority: 220, Description: "Model switch or upgrade confirmation modal"},
+		{Name: "press_enter_confirm_modal", RegexStr: `(?i)press\s+enter\s+to\s+confirm\b`, Agent: "*", State: StateModal, Category: CategoryModal, Priority: 215, Description: "Press enter to confirm modal prompt"},
+
 		// Antigravity (agy) first-run workspace-trust dialog: the pane is
 		// alive but permanently stalled on a menu waiting for a keystroke.
-		// Without these, health reported such panes as OK — the worst
-		// unattended failure mode: green but doing nothing (GH#230 /
-		// ntm-jhd6). Classified as ERROR so health/is-working/wait surface
-		// the pane as needing attention; the CategoryError live-window
-		// filter keeps stale scrollback quotes from re-triggering it.
-		{Name: "agy_trust_prompt", RegexStr: `(?i)do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+project`, Agent: "antigravity", State: StateError, Category: CategoryError, Priority: 210, Description: "Antigravity workspace-trust dialog question (pane blocked on keystroke)"},
-		{Name: "agy_trust_option", RegexStr: `(?i)yes,\s+i\s+trust\s+this\s+folder`, Agent: "antigravity", State: StateError, Category: CategoryError, Priority: 209, Description: "Antigravity workspace-trust dialog option line (pane blocked on keystroke)"},
+		// Classified as MODAL so health/is-working/wait surface the pane as
+		// needing operator attention without triggering automated error restarts.
+		{Name: "agy_trust_prompt", RegexStr: `(?i)do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+project`, Agent: "antigravity", State: StateModal, Category: CategoryModal, Priority: 210, Description: "Antigravity workspace-trust dialog question (pane blocked on keystroke)"},
+		{Name: "agy_trust_option", RegexStr: `(?i)yes,\s+i\s+trust\s+this\s+folder`, Agent: "antigravity", State: StateModal, Category: CategoryModal, Priority: 209, Description: "Antigravity workspace-trust dialog option line (pane blocked on keystroke)"},
+
+		// Interactive auth / onboarding gates
+		{Name: "interactive_gate_browser", RegexStr: `(?i)(?:press\s+enter\s+to\s+open\s+browser|browser\s+didn['’]t\s+open|paste\s+the\s+code\s+from\s+the\s+browser|select\s+login\s+method)`, Agent: "*", State: StateModal, Category: CategoryModal, Priority: 210, Description: "Interactive browser/login gate screen"},
+		{Name: "interactive_gate_theme", RegexStr: `(?i)(?:choose\s+the\s+text\s+style\s+that\s+looks\s+best|select\s+your\s+theme\s+to\s+get\s+started)`, Agent: "*", State: StateModal, Category: CategoryModal, Priority: 210, Description: "Interactive onboarding/theme selection gate screen"},
 
 		// Generic shell prompts (user/fallback)
 		{Name: "shell_dollar", RegexStr: `\$\s*$`, Agent: "*", State: StateWaiting, Category: CategoryIdle, Priority: 20, Description: "Shell dollar prompt"},
@@ -455,4 +471,15 @@ func isKnownAgentPatternType(agentType string) bool {
 // HasThinkingPattern checks for thinking patterns in the default library.
 func HasThinkingPattern(content string, agentType string) bool {
 	return DefaultLibrary.HasThinkingIndicator(content, agentType)
+}
+
+// HasModalPrompt checks if content contains a modal prompt pattern.
+func (lib *PatternLibrary) HasModalPrompt(content string, agentType string) bool {
+	matches := lib.MatchByCategory(content, agentType, CategoryModal)
+	return len(matches) > 0
+}
+
+// HasModalPattern checks for modal patterns in the default library.
+func HasModalPattern(content string, agentType string) bool {
+	return DefaultLibrary.HasModalPrompt(content, agentType)
 }

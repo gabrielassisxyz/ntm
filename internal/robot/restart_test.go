@@ -238,3 +238,20 @@ func TestRestartTypes(t *testing.T) {
 		t.Errorf("RestartNone = %q, want %q", RestartNone, "none")
 	}
 }
+
+func TestRestartManager_ModalBlockedNotRestarted(t *testing.T) {
+	// A pane blocked on a modal or interactive gate must never be automatically restarted
+	shouldRestart, reason := shouldAutoRestartHealthState(HealthBlocked)
+	if shouldRestart {
+		t.Errorf("shouldAutoRestartHealthState(HealthBlocked) = true, want false (modal/blocked panes must never be restarted)")
+	}
+	if !strings.Contains(reason, "blocked") {
+		t.Errorf("reason = %q, want mention of blocked state", reason)
+	}
+
+	// Verify deriveHealthState maps StateModal to HealthBlocked
+	derived := deriveHealthState(StateModal)
+	if derived != HealthBlocked {
+		t.Errorf("deriveHealthState(StateModal) = %v, want %v", derived, HealthBlocked)
+	}
+}

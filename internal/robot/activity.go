@@ -952,6 +952,7 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
 	effectiveMatches = filterErrorToLive(effectiveMatches, liveMatches, sample.CharsAdded > 0)
+	effectiveMatches = filterModalToLive(effectiveMatches, liveMatches, sample.CharsAdded > 0)
 
 	// Calculate proposed state and confidence
 	proposedState, confidence, trigger := sc.classifyState(velocity, effectiveMatches)
@@ -993,12 +994,14 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 // indicate API rate-limiting. Keeping this as a set allows O(1) lookup when
 // scanning pattern matches from the classifier.
 var rateLimitPatternNames = map[string]bool{
-	"rate_limit_text":     true,
-	"http_429":            true,
-	"too_many_requests":   true,
-	"quota_exceeded":      true,
-	"usage_limit_hit":     true,
-	"usage_limit_reached": true,
+	"rate_limit_text":      true,
+	"http_429":             true,
+	"too_many_requests":    true,
+	"quota_exceeded":       true,
+	"usage_limit_hit":      true,
+	"usage_limit_reached":  true,
+	"codex_quota_modal":    true,
+	"provider_quota_modal": true,
 }
 
 // isRateLimitPatternMatch returns true if any PatternMatch corresponds to a
@@ -1234,9 +1237,76 @@ func filterErrorToLive(full, live []PatternMatch, progressing bool) []PatternMat
 	return out
 }
 
+// filterModalToLive drops CategoryModal matches from `full` whose pattern
+// name is not also present in `live`, but only when the pane is demonstrably
+// not stuck: either the live tail shows a fresh idle prompt (the operator
+// answered the modal and the agent returned to prompt) or the pane is progressing
+// (output grew between captures). An interactive modal only requires operator
+// attention while it is still on screen in the live tail.
+func filterModalToLive(full, live []PatternMatch, progressing bool) []PatternMatch {
+	hasModal := false
+	for _, m := range full {
+		if m.Category == CategoryModal {
+			hasModal = true
+			break
+		}
+	}
+	if !hasModal {
+		return full
+	}
+	liveModal := make(map[string]struct{}, len(live))
+	for _, m := range live {
+		if m.Category == CategoryModal {
+			liveModal[m.Pattern] = struct{}{}
+		}
+	}
+	hasStaleModal := false
+	for _, m := range full {
+		if m.Category == CategoryModal {
+			if _, ok := liveModal[m.Pattern]; !ok {
+				hasStaleModal = true
+				break
+			}
+		}
+	}
+	if !hasStaleModal {
+		return full
+	}
+	hasLiveIdle := false
+	for _, m := range live {
+		if m.Category == CategoryIdle {
+			hasLiveIdle = true
+			break
+		}
+	}
+	if !hasLiveIdle && !progressing {
+		return full
+	}
+	out := make([]PatternMatch, 0, len(full))
+	for _, m := range full {
+		if m.Category == CategoryModal {
+			if _, ok := liveModal[m.Pattern]; !ok {
+				continue
+			}
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 // classifyState determines state based on velocity and patterns.
 // Returns state, confidence, and trigger description.
 func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatch) (AgentState, float64, string) {
+	// Modal patterns take highest precedence: an active interactive modal or prompt
+	// (quota switch, upgrade prompt, workspace trust, interactive gate) requires
+	// operator attention. Classifying as StateModal prevents false error restarts
+	// or premature dispatch while waiting for human input.
+	for _, m := range matches {
+		if m.Category == CategoryModal {
+			return StateModal, 0.95, "modal_pattern:" + m.Pattern
+		}
+	}
+
 	// Error patterns take priority
 	for _, m := range matches {
 		if m.Category == CategoryError {
@@ -1292,7 +1362,7 @@ func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatc
 }
 
 // applyHysteresis prevents rapid state flapping.
-// ERROR transitions immediately; other states require stability.
+// ERROR and MODAL transition immediately; other states require stability.
 func (sc *StateClassifier) applyHysteresis(proposed AgentState, confidence float64, trigger string) AgentState {
 	now := time.Now()
 
@@ -1306,6 +1376,18 @@ func (sc *StateClassifier) applyHysteresis(proposed AgentState, confidence float
 		sc.pendingState = ""
 		sc.pendingSince = time.Time{}
 		return StateError
+	}
+
+	// MODAL state transitions immediately (safety - pane is blocked on interactive operator decision)
+	if proposed == StateModal {
+		if sc.currentState != StateModal {
+			sc.recordTransition(sc.currentState, StateModal, confidence, trigger)
+			sc.currentState = StateModal
+			sc.stateSince = now
+		}
+		sc.pendingState = ""
+		sc.pendingSince = time.Time{}
+		return StateModal
 	}
 
 	// First classification - transition immediately to establish baseline

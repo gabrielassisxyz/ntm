@@ -790,6 +790,8 @@ func (s *AgentScorer) stateToScore(state AgentState) float64 {
 		return -50 // May need attention
 	case StateError:
 		return -100 // Excluded
+	case StateModal:
+		return -100 // Excluded: blocked on interactive operator decision
 	case StateUnknown:
 		return 25 // Uncertain, slightly prefer known states
 	default:
@@ -940,6 +942,8 @@ func deriveHealthState(state AgentState) HealthState {
 		return HealthDegraded
 	case StateError:
 		return HealthUnhealthy
+	case StateModal:
+		return HealthBlocked
 	default:
 		return HealthHealthy
 	}

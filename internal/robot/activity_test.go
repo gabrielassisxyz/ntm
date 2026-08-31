@@ -2083,6 +2083,7 @@ func TestAgentStateConstants(t *testing.T) {
 		StateWaiting:    "WAITING",
 		StateThinking:   "THINKING",
 		StateError:      "ERROR",
+		StateModal:      "MODAL",
 		StateStalled:    "STALLED",
 		StateUnknown:    "UNKNOWN",
 	}
@@ -2101,6 +2102,7 @@ func TestPatternCategoryConstants(t *testing.T) {
 		CategoryError:      "error",
 		CategoryThinking:   "thinking",
 		CategoryCompletion: "completion",
+		CategoryModal:      "modal",
 	}
 
 	for cat, expected := range categories {
@@ -3317,5 +3319,137 @@ func TestOutputSequenceScopesAreIndependent(t *testing.T) {
 	}
 	if b2.Sequence != 0 {
 		t.Errorf("scope B sequence = %d, want 0", b2.Sequence)
+	}
+}
+
+// TestClassifyWithOutput_CodexQuotaModalVerbatim tests the verbatim codex quota modal fixture from bd-28h.
+func TestClassifyWithOutput_CodexQuotaModalVerbatim(t *testing.T) {
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "codex",
+		HysteresisDuration: 0,
+	})
+
+	modalFixture := "You've hit your usage limit. Upgrade to Pro ( 1. Switch to... Fast and affordable ... Press enter to confirm"
+
+	activity, err := sc.ClassifyWithOutput(modalFixture)
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput error: %v", err)
+	}
+
+	if activity.State != StateModal {
+		t.Errorf("State = %q, want %q", activity.State, StateModal)
+	}
+	if activity.Confidence < 0.90 {
+		t.Errorf("Confidence = %f, want >= 0.90", activity.Confidence)
+	}
+	if !activity.RateLimited {
+		t.Errorf("RateLimited = false, want true for quota modal")
+	}
+}
+
+// TestClassifyWithOutput_ModalImmediateHysteresis verifies StateModal transitions immediately.
+func TestClassifyWithOutput_ModalImmediateHysteresis(t *testing.T) {
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "codex",
+		HysteresisDuration: 2 * time.Second, // hysteresis enabled
+	})
+
+	// Start in waiting state
+	_, _ = sc.ClassifyWithOutput("codex>")
+
+	// Immediate transition on modal
+	activity, err := sc.ClassifyWithOutput("You've hit your usage limit. Upgrade to Pro\nPress enter to confirm")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	if activity.State != StateModal {
+		t.Errorf("State = %q, want %q (immediate transition without hysteresis debounce)", activity.State, StateModal)
+	}
+}
+
+// TestClassifyWithOutput_ModalLiveVsStaleScrollback verifies that a stale modal in scrollback
+// does not pin a recovered pane (idle prompt) to MODAL.
+func TestClassifyWithOutput_ModalLiveVsStaleScrollback(t *testing.T) {
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "codex",
+		HysteresisDuration: 0,
+	})
+
+	staleModal := "You've hit your usage limit. Upgrade to Pro\nPress enter to confirm\n" +
+		strings.Repeat("some output line\n", 40) +
+		"codex>"
+
+	// First capture
+	_, _ = sc.ClassifyWithOutput(staleModal)
+
+	// Second capture with same output (pane idle at prompt)
+	activity, err := sc.ClassifyWithOutput(staleModal)
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	if activity.State != StateWaiting {
+		t.Errorf("State = %q, want %q (stale modal in scrollback should be filtered out by live tail prompt)", activity.State, StateWaiting)
+	}
+}
+
+// TestClassifyWithOutput_GenuineError_StillError verifies that genuine error strings
+// in the live tail still classify as ERROR with 0.95 confidence.
+func TestClassifyWithOutput_GenuineError_StillError(t *testing.T) {
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "codex",
+		HysteresisDuration: 0,
+	})
+
+	errorFixture := "Running task...\npanic: runtime error: invalid memory address or nil pointer dereference"
+
+	activity, err := sc.ClassifyWithOutput(errorFixture)
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	if activity.State != StateError {
+		t.Errorf("State = %q, want %q", activity.State, StateError)
+	}
+	if activity.Confidence < 0.90 {
+		t.Errorf("Confidence = %f, want >= 0.90", activity.Confidence)
+	}
+}
+
+func TestFilterModalToLive(t *testing.T) {
+	modalMatch := PatternMatch{Pattern: "codex_quota_modal", Category: CategoryModal}
+	idleMatch := PatternMatch{Pattern: "codex_prompt", Category: CategoryIdle}
+
+	// 1. Live modal: present in both full and live -> kept
+	full := []PatternMatch{modalMatch}
+	live := []PatternMatch{modalMatch}
+	out := filterModalToLive(full, live, false)
+	if len(out) != 1 || out[0].Pattern != "codex_quota_modal" {
+		t.Errorf("live modal should be kept, got %+v", out)
+	}
+
+	// 2. Stale modal with live idle prompt: dropped
+	full = []PatternMatch{modalMatch, idleMatch}
+	live = []PatternMatch{idleMatch}
+	out = filterModalToLive(full, live, false)
+	if len(out) != 1 || out[0].Pattern != "codex_prompt" {
+		t.Errorf("stale modal with live idle prompt should be dropped, got %+v", out)
+	}
+
+	// 3. Stale modal with progressing pane: dropped
+	full = []PatternMatch{modalMatch}
+	live = []PatternMatch{}
+	out = filterModalToLive(full, live, true)
+	if len(out) != 0 {
+		t.Errorf("stale modal with progressing pane should be dropped, got %+v", out)
+	}
+
+	// 4. Stale modal with stuck pane (not progressing, no idle prompt): kept
+	full = []PatternMatch{modalMatch}
+	live = []PatternMatch{}
+	out = filterModalToLive(full, live, false)
+	if len(out) != 1 || out[0].Pattern != "codex_quota_modal" {
+		t.Errorf("stale modal on stuck pane should be kept, got %+v", out)
 	}
 }

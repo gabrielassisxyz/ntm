@@ -652,7 +652,7 @@ func TestPatternLibraryAllCategories(t *testing.T) {
 
 	lib := NewPatternLibrary()
 
-	categories := []PatternCategory{CategoryIdle, CategoryError, CategoryThinking, CategoryCompletion}
+	categories := []PatternCategory{CategoryIdle, CategoryError, CategoryThinking, CategoryCompletion, CategoryModal}
 	for _, cat := range categories {
 		patterns := lib.GetPatternsByCategory(cat)
 		if len(patterns) == 0 {
@@ -1074,14 +1074,14 @@ func TestAgyTrustPromptClassifiesAsError(t *testing.T) {
 
 	for _, agentType := range []string{"agy", "antigravity"} {
 		matches := DefaultLibrary.Match(dialog, agentType)
-		foundError := false
+		foundModal := false
 		for _, m := range matches {
-			if m.Category == CategoryError && m.State == StateError {
-				foundError = true
+			if m.Category == CategoryModal && m.State == StateModal {
+				foundModal = true
 			}
 		}
-		if !foundError {
-			t.Errorf("trust dialog did not classify as error for agent type %q (matches: %+v)", agentType, matches)
+		if !foundModal {
+			t.Errorf("trust dialog did not classify as modal for agent type %q (matches: %+v)", agentType, matches)
 		}
 	}
 
@@ -1096,5 +1096,82 @@ func TestAgyTrustPromptClassifiesAsError(t *testing.T) {
 		if m.Pattern == "agy_trust_prompt" || m.Pattern == "agy_trust_option" {
 			t.Errorf("trust pattern matched normal agy output: %+v", m)
 		}
+	}
+}
+
+func TestModalPatterns_CodexAndProviderModals(t *testing.T) {
+	tests := []struct {
+		name       string
+		content    string
+		agentType  string
+		wantMatch  string
+		wantCat    PatternCategory
+		wantState  AgentState
+	}{
+		{
+			name:      "codex usage limit modal verbatim",
+			content:   "You've hit your usage limit. Upgrade to Pro ( 1. Switch to... Fast and affordable ... Press enter to confirm",
+			agentType: "codex",
+			wantMatch: "codex_quota_modal",
+			wantCat:   CategoryModal,
+			wantState: StateModal,
+		},
+		{
+			name:      "provider usage limit modal with enter confirmation",
+			content:   "Reached your usage limit. Press enter to confirm",
+			agentType: "claude",
+			wantMatch: "provider_quota_modal",
+			wantCat:   CategoryModal,
+			wantState: StateModal,
+		},
+		{
+			name:      "model switch confirm modal",
+			content:   "Switch to claude-3-5-sonnet: Press enter to confirm or Esc to cancel",
+			agentType: "codex",
+			wantMatch: "model_switch_confirm_modal",
+			wantCat:   CategoryModal,
+			wantState: StateModal,
+		},
+		{
+			name:      "press enter to confirm prompt",
+			content:   "Select option 1. Press enter to confirm",
+			agentType: "*",
+			wantMatch: "press_enter_confirm_modal",
+			wantCat:   CategoryModal,
+			wantState: StateModal,
+		},
+		{
+			name:      "interactive gate browser login",
+			content:   "Press enter to open browser",
+			agentType: "codex",
+			wantMatch: "interactive_gate_browser",
+			wantCat:   CategoryModal,
+			wantState: StateModal,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matches := DefaultLibrary.Match(tt.content, tt.agentType)
+			var matched *PatternMatch
+			for i := range matches {
+				if matches[i].Pattern == tt.wantMatch {
+					matched = &matches[i]
+					break
+				}
+			}
+			if matched == nil {
+				t.Fatalf("expected match for %q, got matches: %+v", tt.wantMatch, matches)
+			}
+			if matched.Category != tt.wantCat {
+				t.Errorf("category = %q, want %q", matched.Category, tt.wantCat)
+			}
+			if matched.State != tt.wantState {
+				t.Errorf("state = %q, want %q", matched.State, tt.wantState)
+			}
+			if !HasModalPattern(tt.content, tt.agentType) {
+				t.Errorf("HasModalPattern(%q, %q) = false, want true", tt.content, tt.agentType)
+			}
+		})
 	}
 }

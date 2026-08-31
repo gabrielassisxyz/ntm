@@ -111,6 +111,10 @@ func (m *AgentMonitor) GetAgentStatus(paneID, agentType string) AgentStatusResul
 			result.Status = robot.StateError
 			result.Healthy = false
 			result.SafeToDispatch = false
+		} else if activity.State == robot.StateModal {
+			result.Status = robot.StateModal
+			result.Healthy = false
+			result.SafeToDispatch = false
 		}
 	}
 
@@ -147,9 +151,13 @@ func (m *AgentMonitor) GetAgentStatusWithOutput(paneID, paneName, agentType stri
 	activity, err := classifier.ClassifyWithOutput(output)
 	if err == nil {
 		result.Velocity = activity.Velocity
-		// If activity monitor detects error state (via hysteresis etc), respect it
+		// If activity monitor detects error or modal state (via hysteresis etc), respect it
 		if activity.State == robot.StateError {
 			result.Status = robot.StateError
+			result.Healthy = false
+			result.SafeToDispatch = false
+		} else if activity.State == robot.StateModal {
+			result.Status = robot.StateModal
 			result.Healthy = false
 			result.SafeToDispatch = false
 		}
@@ -298,6 +306,9 @@ func activeReservationPatterns(reservations []agentmail.FileReservation, now tim
 // are left untouched so Claude, Codex and pi panes keep their existing
 // short-circuit behaviour.
 func resolveStatus(static robot.AgentState, robotState robot.AgentState) robot.AgentState {
+	if robotState == robot.StateModal {
+		return robot.StateModal
+	}
 	if static == robot.StateError && robotState != robot.StateError {
 		return robotState
 	}
@@ -326,6 +337,8 @@ func mapStatusToRobotState(s status.AgentState) robot.AgentState {
 		return robot.StateGenerating
 	case status.StateError:
 		return robot.StateError
+	case status.StateModal:
+		return robot.StateModal
 	default:
 		return robot.StateUnknown
 	}
