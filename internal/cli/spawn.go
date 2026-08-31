@@ -4045,7 +4045,11 @@ func formatSpawnReadinessVerdict(paneID string, agentType AgentType, verdict str
 	canonical := agentpkg.AgentType(agentType).Canonical()
 	switch verdict {
 	case string(tmux.VerdictNoClassifier):
-		return fmt.Sprintf("⚠ pane %s (%s): no-classifier — no composer classifier for this agent type; the readiness poll still gates delivery, but the composer itself is not double-checked at send time", paneID, canonical)
+		// bd-q2a: the readiness path for a no-classifier type is the state
+		// telemetry poll (state=idle, fresh, confidence >= 0.75) — the parser
+		// double-check is skipped for these types, so what the poll prints is
+		// what gates delivery.
+		return fmt.Sprintf("⚠ pane %s (%s): no-classifier — no composer classifier for this agent type; readiness is the state telemetry poll (idle/fresh/confidence ≥ %.2f), no composer double-check at send time", paneID, canonical, statuspkg.MinimumDispatchConfidence)
 	case spawnVerdictDeliveryNotImplemented:
 		return fmt.Sprintf("⚠ pane %s (%s): delivery-not-implemented — automated prompt delivery is not implemented for this agent type", paneID, canonical)
 	default:
@@ -6066,8 +6070,62 @@ func spawnPaneObservationSafeToDispatch(pane statuspkg.PaneObservation) bool {
 	if !pane.SafeToDispatch() || strings.TrimSpace(pane.RawOutput) == "" {
 		return false
 	}
+	// bd-q2a: agent types with no composer classifier (agy, gmi, cursor, ...)
+	// take their readiness from the state telemetry alone. The parser
+	// double-check below is a second idle classifier with a narrower window
+	// (5 lines vs the telemetry's 12) and a substring working scan over 20
+	// lines, so its verdict can disagree with the telemetry forever — an agy
+	// pane at its prompt behind a footer line timed out every spawn while the
+	// printed telemetry said idle/fresh/0.95. Types with a composer classifier
+	// (cc, cod, pi) keep the double-check; their parser verdicts agree with
+	// the telemetry in practice.
+	if tmux.ComposerClassifierVerdict(tmux.AgentType(pane.AgentType)) == tmux.VerdictNoClassifier {
+		return true
+	}
 	parsed, err := agentpkg.NewParser().ParseWithHint(pane.RawOutput, agentpkg.AgentType(pane.AgentType))
 	return err == nil && parsed.IsIdle && !parsed.IsWorking && !parsed.IsRateLimited && !parsed.IsInError
+}
+
+// spawnPaneReadinessSignal names the first failing readiness signal for a
+// pane the gate refuses: which signal, its observed value, and the threshold
+// it missed. Empty when the pane is dispatchable. bd-q2a — a delivery timeout
+// must say why the gate refused, not just that it timed out.
+func spawnPaneReadinessSignal(pane statuspkg.PaneObservation) string {
+	if pane.Current.Error != "" {
+		return fmt.Sprintf("capture error: %s", pane.Current.Error)
+	}
+	if pane.Current.Freshness != statuspkg.FreshnessFresh {
+		return fmt.Sprintf("freshness=%s (want fresh)", pane.Current.Freshness)
+	}
+	if pane.Current.Status.State != statuspkg.StateIdle {
+		return fmt.Sprintf("state=%s (want idle)", pane.Current.Status.State)
+	}
+	if !statuspkg.ObservationConfidenceIsActionable(pane.Current.Confidence) {
+		return fmt.Sprintf("confidence=%.2f (want >= %.2f)", pane.Current.Confidence, statuspkg.MinimumDispatchConfidence)
+	}
+	// The telemetry is green but a classifier-type pane still failed the
+	// parser double-check: name the parser signal instead of the misleading
+	// state line.
+	if tmux.ComposerClassifierVerdict(tmux.AgentType(pane.AgentType)) != tmux.VerdictNoClassifier {
+		if strings.TrimSpace(pane.RawOutput) == "" {
+			return "capture is empty (parser has nothing to classify)"
+		}
+		parsed, err := agentpkg.NewParser().ParseWithHint(pane.RawOutput, agentpkg.AgentType(pane.AgentType))
+		if err != nil {
+			return fmt.Sprintf("parser error: %v", err)
+		}
+		if parsed.IsRateLimited {
+			return "parser verdict: rate-limited"
+		}
+		if parsed.IsInError {
+			return "parser verdict: in error"
+		}
+		if parsed.IsWorking {
+			return "parser verdict: working"
+		}
+		return "parser verdict: not idle"
+	}
+	return ""
 }
 
 func spawnPaneCommandIsShell(command string) bool {
@@ -6107,6 +6165,9 @@ func spawnReadinessError(prefix string, observation statuspkg.SessionObservation
 		if pane, ok := observation.PaneByID(paneID); ok && pane.Current.Error == "" {
 			if spawnPaneCommandIsShell(pane.Metadata.Command) {
 				details = append(details, fmt.Sprintf("agent process has not replaced shell %q", pane.Metadata.Command))
+			}
+			if signal := spawnPaneReadinessSignal(pane); signal != "" {
+				details = append(details, "failing signal: "+signal)
 			}
 			details = append(details, fmt.Sprintf(
 				"last state=%s freshness=%s confidence=%.2f",

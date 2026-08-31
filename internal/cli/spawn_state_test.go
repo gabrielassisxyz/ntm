@@ -708,10 +708,10 @@ func TestFormatSpawnReadinessVerdict(t *testing.T) {
 			want:      "✓ pane %1 (cc): checked-and-ready",
 		},
 		{
-			name:      "no-classifier says the readiness poll still gates delivery",
+			name:      "no-classifier names the state-telemetry readiness path",
 			agentType: AgentTypeGemini,
 			verdict:   string(tmux.VerdictNoClassifier),
-			want:      "⚠ pane %1 (gmi): no-classifier — no composer classifier for this agent type; the readiness poll still gates delivery, but the composer itself is not double-checked at send time",
+			want:      "⚠ pane %1 (gmi): no-classifier — no composer classifier for this agent type; readiness is the state telemetry poll (idle/fresh/confidence ≥ 0.75), no composer double-check at send time",
 		},
 		{
 			name:      "delivery-not-implemented",

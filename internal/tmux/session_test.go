@@ -463,6 +463,27 @@ func TestValidateSessionName(t *testing.T) {
 	}
 }
 
+// TestSessionTargetPaneIDPassesThrough pins the bd-q2a fix: a pane-ID target
+// must not gain the session-disambiguating colon ("%1:" parses as session
+// "%1" and fails), because Detect(paneID) targets panes through this helper.
+func TestSessionTargetPaneIDPassesThrough(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"demo", "demo:"},
+		{"demo:", "demo:"},
+		{"%1", "%1"},
+		{"%92", "%92"},
+		{"%0", "%0"},
+	}
+	for _, tt := range cases {
+		if got := sessionTarget(tt.input); got != tt.want {
+			t.Errorf("sessionTarget(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestCreateSessionRejectsInvalidNameBeforeInvokingTmux(t *testing.T) {
 	client := NewClient("")
 
