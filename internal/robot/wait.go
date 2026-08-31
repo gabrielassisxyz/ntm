@@ -859,8 +859,8 @@ func meetsSingleWaitCondition(activity *AgentActivity, condition string) bool {
 		return activity.State == StateGenerating
 
 	case WaitConditionHealthy:
-		// Not ERROR and not STALLED
-		return activity.State != StateError && activity.State != StateStalled
+		// Not ERROR, not STALLED, and not MODAL (waiting on operator)
+		return activity.State != StateError && activity.State != StateStalled && activity.State != StateModal
 
 	case WaitConditionStalled:
 		return activity.State == StateStalled

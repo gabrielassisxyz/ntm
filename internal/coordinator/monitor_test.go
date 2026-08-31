@@ -68,6 +68,8 @@ func TestResolveStatus(t *testing.T) {
 		{"static error downgraded to generating", robot.StateError, robot.StateGenerating, robot.StateGenerating},
 		{"static error downgraded to thinking", robot.StateError, robot.StateThinking, robot.StateThinking},
 		{"static error downgraded to waiting", robot.StateError, robot.StateWaiting, robot.StateWaiting},
+		{"static error overridden to modal", robot.StateError, robot.StateModal, robot.StateModal},
+		{"static waiting overridden to modal", robot.StateWaiting, robot.StateModal, robot.StateModal},
 		{"static error kept when robot also errors", robot.StateError, robot.StateError, robot.StateError},
 		{"static error kept when robot is unknown", robot.StateError, robot.StateUnknown, robot.StateUnknown},
 		{"static generating untouched by robot thinking", robot.StateGenerating, robot.StateThinking, robot.StateGenerating},
@@ -246,5 +248,48 @@ func TestGetAssignmentCandidates_SkipsErroredAgent(t *testing.T) {
 	candidates := c.getAssignmentCandidates()
 	if len(candidates) != 1 || candidates[0].PaneID != "%2" {
 		t.Fatalf("candidates = %+v, want only %%2 (errored %%1 skipped)", candidates)
+	}
+}
+
+// TestResultFromPaneObservation_ModalPaneNotDispatchable verifies that a pane
+// on a live quota/upgrade modal is classified as StateModal and is not safe to dispatch.
+func TestResultFromPaneObservation_ModalPaneNotDispatchable(t *testing.T) {
+	m := NewAgentMonitor("test-session", nil, t.TempDir())
+
+	modalFixture := "You've hit your usage limit. Upgrade to Pro ( 1. Switch to... Fast and affordable ... Press enter to confirm"
+	obs := paneObservation("%1", "codex", status.StateIdle, modalFixture)
+
+	result := m.resultFromPaneObservation(obs)
+
+	if result.Status != robot.StateModal {
+		t.Fatalf("result.Status = %s, want %s (StateModal)", result.Status, robot.StateModal)
+	}
+	if result.SafeToDispatch {
+		t.Fatalf("result.SafeToDispatch = true, want false for modal pane")
+	}
+	if result.Healthy {
+		t.Fatalf("result.Healthy = true, want false for modal pane")
+	}
+}
+
+// TestGetAssignmentCandidates_SkipsModalAgent verifies that an agent in StateModal
+// is withheld from task assignment.
+func TestGetAssignmentCandidates_SkipsModalAgent(t *testing.T) {
+	c := New("coordinator-modal-gate", t.TempDir(), nil, "CoordinatorAgent")
+	now := time.Now().UTC()
+	c.config.IdleThreshold = 0
+	c.config.AssignOnlyIdle = false
+	c.agents["%1"] = &AgentState{
+		PaneID: "%1", Status: robot.StateModal, Healthy: false, SafeToDispatch: false,
+		ObservedAt: now, ObservationFreshness: status.FreshnessFresh,
+	}
+	c.agents["%2"] = &AgentState{
+		PaneID: "%2", Status: robot.StateWaiting, Healthy: true, SafeToDispatch: true,
+		ObservedAt: now, ObservationFreshness: status.FreshnessFresh,
+	}
+
+	candidates := c.getAssignmentCandidates()
+	if len(candidates) != 1 || candidates[0].PaneID != "%2" {
+		t.Fatalf("candidates = %+v, want only %%2 (modal %%1 skipped)", candidates)
 	}
 }

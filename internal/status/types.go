@@ -19,6 +19,8 @@ const (
 	StateWorking AgentState = "working"
 	// StateError indicates the agent encountered a problem
 	StateError AgentState = "error"
+	// StateModal indicates the agent is waiting on an interactive modal or prompt
+	StateModal AgentState = "modal"
 	// StateUnknown indicates the state cannot be determined
 	StateUnknown AgentState = "unknown"
 )
@@ -27,13 +29,15 @@ const (
 func (s AgentState) Icon() string {
 	switch s {
 	case StateIdle:
-		return "\u26aa" // white circle
+		return "⚪" // white circle
 	case StateWorking:
-		return "\U0001f7e2" // green circle
+		return "🟢" // green circle
 	case StateError:
-		return "\U0001f534" // red circle
+		return "🔴" // red circle
+	case StateModal:
+		return "🟡" // yellow circle
 	default:
-		return "\u26ab" // black circle
+		return "⚫" // black circle
 	}
 }
 

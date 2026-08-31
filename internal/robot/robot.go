@@ -11357,7 +11357,7 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			availableAgents = append(availableAgents, paneKey)
 		case StateGenerating, StateThinking:
 			busyAgents = append(busyAgents, paneKey)
-		case StateError, StateStalled:
+		case StateError, StateStalled, StateModal:
 			problemAgents = append(problemAgents, paneKey)
 		}
 	}

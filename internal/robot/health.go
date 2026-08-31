@@ -609,6 +609,9 @@ func checkStallWithActivity(classifier *StateClassifier) *StallCheckResult {
 	case StateError:
 		result.Stalled = true
 		result.Reason = "agent in error state"
+	case StateModal:
+		result.Stalled = false
+		result.Reason = "agent waiting on interactive modal"
 	case StateUnknown:
 		// Unknown might indicate a stall if velocity is 0
 		if activity.Velocity == 0 && result.IdleSeconds > int(DefaultStallThreshold.Seconds()) {
@@ -719,13 +722,9 @@ func checkErrorsInOutput(output string, agentType string, paneWidth int, progres
 		}
 	}
 
-	// Interactive gate screens (bd-jf22c): a pane parked on a modal trust /
-	// login / onboarding screen is alive, produces no errors, and previously
-	// read "healthy" while it could never accept work. The shared detector
-	// scans only the live tail and vetoes matches while working chrome is
-	// visible. Only real agent panes are scanned: user/unknown panes never
-	// render gate screens, and a shell tailing a log that happens to print
-	// a gate phrase must not read as blocked.
+	// Interactive gate screens and modal prompt patterns: a pane parked on a
+	// modal trust / login / onboarding / quota screen is alive, produces no fatal
+	// crash errors, and needs operator decision / keystroke rather than a restart.
 	var gate string
 	var gateFound bool
 	canonicalType := agent.AgentType(agentType).Canonical()
@@ -736,12 +735,20 @@ func checkErrorsInOutput(output string, agentType string, paneWidth int, progres
 			result.Blocked = true
 		}
 	}
+	if !result.Blocked && HasModalPattern(live, agentType) {
+		result.Patterns = append(result.Patterns, "modal_prompt")
+		result.Blocked = true
+	}
 
-	if result.RateLimited {
+	if result.Blocked {
+		if gateFound {
+			result.Reason = fmt.Sprintf("blocked on interactive gate screen (%q); needs a keystroke", gate)
+		} else {
+			result.Reason = "blocked on interactive modal; needs operator decision"
+		}
+	} else if result.RateLimited {
 		result.HasErrors = true
 		result.Reason = "rate limit detected"
-	} else if gateFound {
-		result.Reason = fmt.Sprintf("blocked on interactive gate screen (%q); needs a keystroke", gate)
 	} else if len(result.Patterns) > 0 {
 		result.Reason = fmt.Sprintf("detected: %v", result.Patterns)
 	}
@@ -811,9 +818,12 @@ func calculateHealthState(check *HealthCheck) (HealthState, string) {
 		return HealthUnhealthy, "error detected: " + check.ErrorCheck.Reason
 	}
 
-	// Interactive gate (blocked): needs a human keystroke, never a restart.
+	// Interactive gate or modal prompt (blocked): needs an operator decision / keystroke, never a restart.
 	if check.ErrorCheck != nil && check.ErrorCheck.Blocked {
 		return HealthBlocked, check.ErrorCheck.Reason
+	}
+	if check.StallCheck != nil && check.StallCheck.ActivityState == string(StateModal) {
+		return HealthBlocked, "agent waiting on interactive modal prompt"
 	}
 
 	// Check for rate limit

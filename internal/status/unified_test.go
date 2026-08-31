@@ -357,10 +357,11 @@ func TestAgentStateIcon(t *testing.T) {
 		state    AgentState
 		expected string
 	}{
-		{StateIdle, "\u26aa"},        // white circle
-		{StateWorking, "\U0001f7e2"}, // green circle
-		{StateError, "\U0001f534"},   // red circle
-		{StateUnknown, "\u26ab"},     // black circle
+		{StateIdle, "⚪"},    // white circle
+		{StateWorking, "🟢"}, // green circle
+		{StateError, "🔴"},   // red circle
+		{StateModal, "🟡"},   // yellow circle
+		{StateUnknown, "⚫"}, // black circle
 	}
 
 	for _, tt := range tests {
@@ -405,6 +406,7 @@ func TestAgentStateString(t *testing.T) {
 		{StateIdle, "idle"},
 		{StateWorking, "working"},
 		{StateError, "error"},
+		{StateModal, "modal"},
 		{StateUnknown, "unknown"},
 	}
 

@@ -25,6 +25,11 @@ var errorPatternsMu sync.RWMutex
 
 // errorPatterns contains all known error patterns, ordered by priority.
 // More specific patterns should come first within each category.
+// Note: When output represents an active interactive modal (such as a provider
+// quota exhaustion modal prompting for model downgrade/upgrade or keystroke confirmation),
+// the robot activity classifier identifies it as StateModal (CategoryModal) rather than
+// treating it as a crashed/fatal error. errorPatterns here provides static single-snapshot
+// substring detection.
 var errorPatterns = []ErrorPattern{
 	// Rate limiting (highest priority - transient errors)
 	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)rate[\s._-]?limit`), Description: "Rate limit message"},
