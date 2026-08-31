@@ -706,6 +706,37 @@ func StableClaimActor(baseActor, idempotencyKey string) string {
 	return baseActor + suffix
 }
 
+// EffectiveClaimState reports the claim state a caller should act on,
+// including rows written before ClaimState was recorded explicitly.
+func EffectiveClaimState(a *Assignment) ClaimState {
+	return effectiveClaimState(a)
+}
+
+// IsStableClaimActor reports whether actor has the exact shape
+// StableClaimActor produces: a non-empty base followed by "/ntm-" and exactly
+// 12 hex characters. The --clear recovery path uses this to recognize a Beads
+// claim as ntm-created when the durable assignment record is already gone; a
+// foreign actor never matches and is therefore never released through it.
+func IsStableClaimActor(actor string) bool {
+	actor = strings.TrimSpace(actor)
+	const marker = "/ntm-"
+	index := strings.LastIndex(actor, marker)
+	if index < 0 {
+		return false
+	}
+	key := actor[index+len(marker):]
+	if len(key) != 12 {
+		return false
+	}
+	for _, r := range key {
+		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
 // Execute claims the bead, persists the claim, reserves files, persists the
 // lease, and only then dispatches. Same-key completed retries are replayed
 // without external side effects.

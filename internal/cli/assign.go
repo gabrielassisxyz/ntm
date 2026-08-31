@@ -240,6 +240,14 @@ Clear Assignments:
   Use --clear-failed to clear all failed assignments.
   Use --force to clear completed assignments.
 
+Beads Claims and Failed Dispatches:
+  When a dispatch fails after the Beads claim landed, the claim is kept on
+  purpose (the prompt may have been delivered); ntm never rolls it back
+  automatically. "ntm assign <session> --clear <bead>" is the recovery
+  command and is guaranteed to release that claim - even when the local
+  assignment record is already gone. ntm recognizes its own claims by their
+  stable actor in the tracker, and never releases another actor's claim.
+
   ntm assign myproject --clear bd-xyz             # Clear single assignment
   ntm assign myproject --clear bd-xyz,bd-abc      # Clear multiple assignments
   ntm assign myproject --clear-pane=3             # Clear all assignments for pane 3
@@ -327,7 +335,7 @@ Examples:
 	cmd.Flags().StringVar(&assignPrompt, "prompt", "", "Custom prompt for direct assignment")
 
 	// Clear assignment flags
-	cmd.Flags().StringVar(&assignClear, "clear", "", "Clear specific bead assignments (comma-separated bead IDs)")
+	cmd.Flags().StringVar(&assignClear, "clear", "", "Clear specific bead assignments (comma-separated). Also releases an ntm-created Beads claim whose durable record is gone; another actor's claim is never released")
 	cmd.Flags().StringVar(&assignClearPane, "clear-pane", "", "Clear all assignments for one pane (N, W.P, or %N; use when agent crashed)")
 	cmd.Flags().BoolVar(&assignClearFailed, "clear-failed", false, "Clear all failed assignments")
 
@@ -3052,6 +3060,11 @@ func executeAssignmentsEnhanced(ctx context.Context, session string, out *Assign
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: atomic assignment: %v", item.BeadID, assignErr))
 			if !opts.Quiet {
 				fmt.Printf("  Failed to assign %s to pane %s: %v\n", item.BeadID, item.PaneTarget, assignErr)
+				if durable := atomicResult.Assignment; durable != nil && durable.BeadID == item.BeadID && durable.IdempotencyKey == idempotencyKey {
+					if note := atomicDispatchFailureClaimNote(durable, session, item.BeadID); note != "" {
+						fmt.Printf("  Note: %s\n", note)
+					}
+				}
 			}
 			failCount++
 			continue
@@ -3484,6 +3497,16 @@ const (
 	clearErrCompletionPending = "COMPLETION_EVENT_PENDING"
 )
 
+const (
+	// ClearReleasedViaAssignmentRecord marks a Beads claim released through the
+	// durable assignment record row.
+	clearReleasedViaAssignmentRecord = "assignment_record"
+	// ClearReleasedViaOrphanedBeadsClaim marks a Beads claim released by
+	// matching ntm's own stable claim actor in the live tracker after the
+	// durable assignment record was already gone (bd-1zn).
+	clearReleasedViaOrphanedBeadsClaim = "orphaned_beads_claim"
+)
+
 func clearAssignmentFailureCode(err error) string {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -3506,9 +3529,14 @@ type ClearAssignmentResult struct {
 	AssignmentFound          bool     `json:"assignment_found"`
 	FileReservationsReleased bool     `json:"file_reservations_released"`
 	FilesReleased            []string `json:"files_released,omitempty"`
-	Success                  bool     `json:"success"`
-	Error                    string   `json:"error,omitempty"`
-	ErrorCode                string   `json:"error_code,omitempty"`
+	// ReleasedVia names the path that released the Beads claim:
+	// "assignment_record" when the durable row drove the release, or
+	// "orphaned_beads_claim" when the row was already gone and ntm matched its
+	// own claim by the stable claim actor observed in the tracker (bd-1zn).
+	ReleasedVia string `json:"released_via,omitempty"`
+	Success     bool   `json:"success"`
+	Error       string `json:"error,omitempty"`
+	ErrorCode   string `json:"error_code,omitempty"`
 }
 
 // ClearAllResult represents result of clearing all assignments for a pane.
@@ -4148,6 +4176,58 @@ func clearStoredAssignment(ctx context.Context, store *assignment.AssignmentStor
 	return clearStoredAssignmentIfStatus(ctx, store, session, current)
 }
 
+// atomicDispatchFailureClaimNote builds the operator-facing note for a
+// dispatch that failed after the Beads claim landed (bd-1zn). The claim is
+// intentionally NOT rolled back: the prompt may have been delivered, and
+// releasing the claim silently could let the same bead be dispatched again
+// elsewhere. `ntm assign --clear` is guaranteed to release it — with or
+// without the durable record — so the note names that command. Returns ""
+// unless this record proves the claim landed (pre-claim failures hold no
+// claim and must not promise a release).
+func atomicDispatchFailureClaimNote(record *assignment.Assignment, session, beadID string) string {
+	if !recordProvesClaimLanded(record) {
+		return ""
+	}
+	return fmt.Sprintf("Beads claim for %s is intentionally kept after the failed dispatch (the prompt may have been delivered); release it with \"ntm assign %s --clear %s\"", beadID, session, beadID)
+}
+
+func recordProvesClaimLanded(record *assignment.Assignment) bool {
+	if record == nil || strings.TrimSpace(record.IdempotencyKey) == "" {
+		return false
+	}
+	return assignment.EffectiveClaimState(record) == assignment.ClaimClaimed
+}
+
+// releaseOrphanedBeadsClaimIfOwned releases a Beads claim that outlived its
+// durable assignment record (bd-1zn): the record's lifetime is shorter than
+// the claim's, so the documented recovery `ntm assign --clear` must look at
+// the tracker itself. Only a claim whose live assignee is ntm's own stable
+// claim actor (assignment.IsStableClaimActor) is ever released — another
+// actor's claim is left untouched. The release itself stays compare-and-set
+// on that same actor, so a claim that changes hands mid-flight is refused.
+func releaseOrphanedBeadsClaimIfOwned(ctx context.Context, session, beadID string) (string, error) {
+	projectDir, err := resolveAssignProjectDir(ctx, session)
+	if err != nil {
+		return "", fmt.Errorf("resolve project for orphaned Beads claim release %s: %w", beadID, err)
+	}
+	details, err := getBeadAssignmentDetailsForAssignment(ctx, projectDir, beadID)
+	if err != nil {
+		return "", fmt.Errorf("inspect Beads claim for record-absent %s: %w", beadID, err)
+	}
+	actor := strings.TrimSpace(details.Assignee)
+	if actor == "" || !assignment.IsStableClaimActor(actor) {
+		return "", nil
+	}
+	released, err := releaseBeadClaimForAssignment(ctx, projectDir, beadID, actor)
+	if err != nil {
+		return "", fmt.Errorf("release orphaned Beads claim for %s: %w", beadID, err)
+	}
+	if !released {
+		return "", fmt.Errorf("beads claim for %s is no longer held by %s (compare-and-set refused); nothing was released", beadID, actor)
+	}
+	return actor, nil
+}
+
 func clearStoredAssignmentIfStatus(ctx context.Context, store *assignment.AssignmentStore, session string, current *assignment.Assignment, expected ...assignment.AssignmentStatus) ([]string, error) {
 	if current == nil {
 		return nil, errors.New("assignment is required")
@@ -4305,6 +4385,12 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 		result := ClearAssignmentResult{
 			BeadID: beadID,
 		}
+		// bd-1zn: record-absent beads fall back to a live tracker check below,
+		// but never across a cancellation.
+		clearCancellation := cancellationErr
+		if clearCancellation == nil {
+			clearCancellation = ctx.Err()
+		}
 
 		// Find the assignment
 		assignments := store.GetAll()
@@ -4317,8 +4403,37 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 		}
 
 		if foundAssignment == nil {
-			result.Success = false
-			result.Error = "assignment not found or already completed"
+			// bd-1zn: no durable record may still leave ntm's own Beads claim
+			// standing (the record's lifetime is shorter than the claim's).
+			// Retry the release against the live tracker, but only for an
+			// assignee that provably belongs to an ntm assignment; anything else
+			// stays "not found" and untouched.
+			if clearCancellation == nil && store.Get(beadID) == nil {
+				orphanActor, orphanErr := releaseOrphanedBeadsClaimIfOwned(ctx, session, beadID)
+				orphanErr = preserveCommandContextError(ctx, orphanErr)
+				if orphanActor != "" {
+					result.Success = true
+					result.ReleasedVia = clearReleasedViaOrphanedBeadsClaim
+					result.PreviousAgent = orphanActor
+					successCount++
+				} else if orphanErr != nil {
+					if firstFailureErr == nil {
+						firstFailureErr = orphanErr
+					}
+					result.Success = false
+					result.Error = orphanErr.Error()
+					result.ErrorCode = clearAssignmentFailureCode(orphanErr)
+					if typedFailureCode == "" && result.ErrorCode != "" {
+						typedFailureCode = result.ErrorCode
+					}
+				} else {
+					result.Success = false
+					result.Error = "assignment not found or already completed"
+				}
+			} else {
+				result.Success = false
+				result.Error = "assignment not found or already completed"
+			}
 		} else {
 			result.PreviousPane = foundAssignment.Pane
 			result.PreviousAgent = foundAssignment.AgentName
@@ -4355,6 +4470,7 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 					}
 				}
 			} else {
+				result.ReleasedVia = clearReleasedViaAssignmentRecord
 				result.FilesReleased = releasedFiles
 				result.FileReservationsReleased = len(releasedFiles) > 0
 				result.Success = true
@@ -4420,7 +4536,11 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 		fmt.Printf("Cleared %d of %d bead assignments:\n\n", successCount, len(beadIDs))
 		for _, result := range results {
 			if result.Success {
-				fmt.Printf("  ✓ %s (pane %d, %s)\n", result.BeadID, result.PreviousPane, result.PreviousAgentType)
+				if result.ReleasedVia == clearReleasedViaOrphanedBeadsClaim {
+					fmt.Printf("  ✓ %s (released orphaned beads claim assigned to %s)\n", result.BeadID, result.PreviousAgent)
+				} else {
+					fmt.Printf("  ✓ %s (pane %d, %s)\n", result.BeadID, result.PreviousPane, result.PreviousAgentType)
+				}
 				if len(result.FilesReleased) > 0 {
 					fmt.Printf("    Released files: %v\n", result.FilesReleased)
 				}
@@ -6083,9 +6203,21 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 		case durableAssignment != nil && durableAssignment.DispatchAttempts > 0:
 			code = "SEND_ERROR"
 		}
+		// bd-1zn: when the failure happened after the claim landed, say where
+		// the claim stands and name the guaranteed recovery command.
+		claimNote := ""
+		if durableAssignment != nil && durableAssignment.BeadID == beadID {
+			claimNote = atomicDispatchFailureClaimNote(durableAssignment, opts.Session, beadID)
+		}
+		if claimNote != "" {
+			warnings = append(warnings, claimNote)
+		}
 		if IsJSONOutput() {
 			data := &DirectAssignData{Assignment: assignItem, FileReservations: fileReservations, Receipt: receipt}
 			return emitJSONFailureEnvelope(makeDirectAssignEnvelope(opts.Session, false, data, code, assignErr.Error(), warnings))
+		}
+		if claimNote != "" {
+			fmt.Printf("  Note: %s\n", claimNote)
 		}
 		return assignErr
 	}
