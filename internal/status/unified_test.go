@@ -1402,7 +1402,7 @@ func TestPaneObservationSafeToDispatchFailsClosed(t *testing.T) {
 	}{
 		{name: "stale", mutate: func(p *PaneObservation) { p.Current.Freshness = FreshnessStale }},
 		{name: "unavailable", mutate: func(p *PaneObservation) { p.Current.Freshness = FreshnessUnavailable }},
-		{name: "low confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = minimumDispatchConfidence - 0.01 }},
+		{name: "low confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = MinimumDispatchConfidence - 0.01 }},
 		{name: "invalid high confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = 1.01 }},
 		{name: "capture error", mutate: func(p *PaneObservation) { p.Current.Error = "capture failed" }},
 		{name: "working", mutate: func(p *PaneObservation) { p.Current.Status.State = StateWorking }},
@@ -1462,8 +1462,8 @@ func TestSessionObserverWeightsIdleConfidenceByEvidence(t *testing.T) {
 			if pane.SafeToDispatch() != test.wantDispatch {
 				t.Fatalf("SafeToDispatch() = %v, want %v (confidence %.2f)", pane.SafeToDispatch(), test.wantDispatch, pane.Current.Confidence)
 			}
-			if !test.wantDispatch && pane.Current.Confidence >= minimumDispatchConfidence {
-				t.Fatalf("weak idle confidence = %.2f, must be below %.2f", pane.Current.Confidence, minimumDispatchConfidence)
+			if !test.wantDispatch && pane.Current.Confidence >= MinimumDispatchConfidence {
+				t.Fatalf("weak idle confidence = %.2f, must be below %.2f", pane.Current.Confidence, MinimumDispatchConfidence)
 			}
 		})
 	}

@@ -1092,6 +1092,16 @@ func GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 // panes as its own, create none, and launch every agent into windows belonging
 // to whoever was attached. "<session>:" can only ever name a session.
 func sessionTarget(session string) string {
+	// Pane IDs are already unambiguous tmux targets: "%1" can only mean the
+	// pane. The trailing colon that disambiguates session names would corrupt
+	// one — "%1:" parses as session "%1" and fails with "can't find
+	// session" — so pass them through untouched. bd-q2a: this is what broke
+	// Detect("%N") when 602397c2 made it propagate GetPanesWithActivity
+	// errors; every pane-targeted Detect failed while session-targeted calls
+	// kept working.
+	if strings.HasPrefix(session, "%") {
+		return session
+	}
 	if strings.HasSuffix(session, ":") {
 		return session
 	}

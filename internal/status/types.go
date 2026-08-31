@@ -162,12 +162,15 @@ type PaneObservation struct {
 	RawOutput string            `json:"-"`
 }
 
-const minimumDispatchConfidence = 0.75
+// MinimumDispatchConfidence is the confidence floor a fresh idle observation
+// must meet before it may authorize dispatch (SafeToDispatch). It is exported
+// so timeout errors can name the threshold next to the observed value.
+const MinimumDispatchConfidence = 0.75
 
 // ObservationConfidenceIsActionable reports whether evidence is strong enough
 // to authorize a durable state transition or dispatch decision.
 func ObservationConfidenceIsActionable(confidence float64) bool {
-	return confidence >= minimumDispatchConfidence && confidence <= 1
+	return confidence >= MinimumDispatchConfidence && confidence <= 1
 }
 
 // DispatchObservationMaxAge bounds how long an idle observation may authorize
