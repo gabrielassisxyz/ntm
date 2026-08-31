@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // agyIdleFooterCapture models an Antigravity pane at its prompt (bd-q2a): the
