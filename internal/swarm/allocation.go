@@ -49,6 +49,7 @@ func (ac *AllocationCalculator) CalculateProjectAllocation(project ProjectBeadCo
 		CCAgents:    alloc.CC,
 		CodAgents:   alloc.Cod,
 		GmiAgents:   alloc.Gmi,
+		PiAgents:    alloc.Pi,
 		TotalAgents: alloc.Total(),
 	}
 }
@@ -81,6 +82,7 @@ type AggregateTotals struct {
 	TotalCod    int
 	TotalGmi    int
 	TotalAgy    int
+	TotalPi     int
 	TotalAgents int
 }
 
@@ -92,6 +94,7 @@ func (ac *AllocationCalculator) CalculateTotals(allocations []ProjectAllocation)
 		totals.TotalCod += alloc.CodAgents
 		totals.TotalGmi += alloc.GmiAgents
 		totals.TotalAgy += alloc.AgyAgents
+		totals.TotalPi += alloc.PiAgents
 		totals.TotalAgents += alloc.TotalAgents
 	}
 	return totals
@@ -136,7 +139,7 @@ func (ac *AllocationCalculator) GenerateSwarmPlan(scanDir string, projects []Pro
 	sessionsPerType := ac.Config.SessionsPerType
 	panesPerSession := ac.Config.PanesPerSession
 	if panesPerSession == 0 {
-		maxAgentsPerType := max(result.Totals.TotalCC, result.Totals.TotalCod, result.Totals.TotalGmi, result.Totals.TotalAgy)
+		maxAgentsPerType := max(result.Totals.TotalCC, result.Totals.TotalCod, result.Totals.TotalGmi, result.Totals.TotalAgy, result.Totals.TotalPi)
 		if sessionsPerType > 0 && maxAgentsPerType > 0 {
 			panesPerSession = (maxAgentsPerType + sessionsPerType - 1) / sessionsPerType // Ceiling division
 		}
@@ -158,6 +161,7 @@ func (ac *AllocationCalculator) GenerateSwarmPlan(scanDir string, projects []Pro
 		TotalCod:           result.Totals.TotalCod,
 		TotalGmi:           result.Totals.TotalGmi,
 		TotalAgy:           result.Totals.TotalAgy,
+		TotalPi:            result.Totals.TotalPi,
 		TotalAgents:        result.Totals.TotalAgents,
 		PlannedAgents:      plannedAgents,
 		AutoRotateAccounts: ac.Config.AutoRotateAccounts,
@@ -190,6 +194,11 @@ func (ac *AllocationCalculator) generateSessions(allocations []ProjectAllocation
 	agySessions := ac.generateSessionsForType("agy", allocations, sessionsPerType, panesPerSession,
 		func(a ProjectAllocation) int { return a.AgyAgents })
 	sessions = append(sessions, agySessions...)
+
+	// Generate pi sessions
+	piSessions := ac.generateSessionsForType("pi", allocations, sessionsPerType, panesPerSession,
+		func(a ProjectAllocation) int { return a.PiAgents })
+	sessions = append(sessions, piSessions...)
 
 	return sessions
 }

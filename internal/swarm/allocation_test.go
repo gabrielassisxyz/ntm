@@ -508,6 +508,89 @@ func TestGenerateSwarmPlan_PlannedAgentsReflectsActualPanes(t *testing.T) {
 		plan.TotalAgents, plan.PlannedAgents)
 }
 
+// A pi allocation in the tier tables produces pi sessions and panes, the
+// same way cc/cod/gmi do — so a litellm/ollama-cloud bead swarm can be
+// allocated at all (bd-ut0). Without the pi lane in generateSessions and the
+// pi field flowing through the aggregate, the plan below has zero pi
+// sessions and TotalPi == 0.
+func TestAllocationCalculator_GenerateSwarmPlan_PiLane(t *testing.T) {
+	cfg := testSwarmConfig()
+	cfg.Tier1Allocation.Pi = 2
+	cfg.Tier2Allocation.Pi = 1
+	ac := NewAllocationCalculator(cfg)
+
+	projects := []ProjectBeadCount{
+		{Path: "/dp/proj1", Name: "proj1", OpenBeads: 500}, // tier1 -> pi 2
+		{Path: "/dp/proj2", Name: "proj2", OpenBeads: 150}, // tier2 -> pi 1
+	}
+
+	plan := ac.GenerateSwarmPlan("/dp", projects)
+
+	if plan.TotalPi != 3 {
+		t.Errorf("TotalPi = %d, want 3", plan.TotalPi)
+	}
+
+	var piPanes int
+	var piSessions int
+	seenNames := map[string]bool{}
+	for _, s := range plan.Sessions {
+		if s.AgentType != "pi" {
+			continue
+		}
+		piSessions++
+		for _, p := range s.Panes {
+			piPanes++
+			name := DerivePaneAgentName(s.Name, p.Index)
+			if name == "" {
+				t.Errorf("pi pane %d in session %q derives an empty AGENT_NAME", p.Index, s.Name)
+			}
+			if seenNames[name] {
+				t.Errorf("pi pane AGENT_NAME %q is not distinct across the launch", name)
+			}
+			seenNames[name] = true
+			if p.LaunchCmd != "pi" {
+				t.Errorf("pi pane LaunchCmd = %q, want pi", p.LaunchCmd)
+			}
+		}
+	}
+	if piSessions == 0 {
+		t.Fatal("expected at least one pi_agents_* session")
+	}
+	if piPanes != 3 {
+		t.Errorf("pi panes = %d, want 3", piPanes)
+	}
+
+	// The pi allocation must also be reflected per-project so the plan's
+	// surfaces can report it.
+	if plan.Allocations[0].PiAgents != 2 {
+		t.Errorf("proj1 PiAgents = %d, want 2", plan.Allocations[0].PiAgents)
+	}
+}
+
+// pi contributes to the auto-sized session grid: a plan whose only agents
+// are pi must still fit them all.
+func TestAllocationCalculator_GenerateSwarmPlan_PiOnly_LosesNoAgents(t *testing.T) {
+	cfg := config.DefaultSwarmConfig()
+	cfg.SessionsPerType = 2
+	cfg.PanesPerSession = 0 // auto
+	cfg.Tier1Allocation = config.AllocationSpec{Pi: 5}
+	cfg.Tier2Allocation = config.AllocationSpec{Pi: 2}
+	cfg.Tier3Allocation = config.AllocationSpec{Pi: 1}
+
+	calc := NewAllocationCalculator(&cfg)
+	projects := []ProjectBeadCount{
+		{Path: "/tmp/p1", Name: "p1", OpenBeads: 400},
+		{Path: "/tmp/p2", Name: "p2", OpenBeads: 120},
+	}
+	plan := calc.GenerateSwarmPlan("/tmp", projects)
+	if plan.TotalPi != 7 {
+		t.Fatalf("TotalPi = %d, want 7", plan.TotalPi)
+	}
+	if plan.PlannedAgents != plan.TotalAgents {
+		t.Fatalf("pi-only plan dropped agents: planned=%d total=%d", plan.PlannedAgents, plan.TotalAgents)
+	}
+}
+
 // The auto-sized path must never drop anything.
 func TestGenerateSwarmPlan_AutoSizedPlanLosesNoAgents(t *testing.T) {
 	cfg := config.DefaultSwarmConfig()

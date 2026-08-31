@@ -243,6 +243,64 @@ func TestCreateSession_IdentityEnvDisabled_MatchesPreExistingBehavior(t *testing
 	}
 }
 
+// TestCreateSession_IdentityEnvEnabled_EquipsPiPanes proves a pi session —
+// the lane bd-ut0 adds to the swarm allocation — flows through the same
+// identity-env path as cc/cod/gmi: every pi pane's tmux create call carries
+// GIT_IDENTITY_ENABLED=1 (session-scoped) and a distinct AGENT_NAME
+// (pane-scoped), which is what /proc/<pid>/environ of the pi process then
+// shows.
+func TestCreateSession_IdentityEnvEnabled_EquipsPiPanes(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "tmux.log")
+	scriptPath := writeFakeTmuxForOrchestrator(t, logPath, "GIT_IDENTITY_ENABLED=1\n")
+	t.Setenv("NTM_TMUX_BINARY", scriptPath)
+
+	orch := NewSessionOrchestrator()
+	orch.StaggerDelay = 0
+	client := tmux.NewClient("")
+	spec := SessionSpec{
+		Name:      "pi_agents_1",
+		AgentType: "pi",
+		Panes: []PaneSpec{
+			{Index: 1, AgentType: "pi", LaunchCmd: "pi"},
+			{Index: 2, AgentType: "pi", LaunchCmd: "pi"},
+		},
+	}
+
+	result := orch.createSession(client, spec, true)
+	if result.Error != nil {
+		t.Fatalf("createSession error: %v", result.Error)
+	}
+
+	lines := readOrchestratorLog(t, logPath)
+	var newSessionCall, splitWindowCall string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "new-session ") {
+			newSessionCall = line
+		}
+		if strings.HasPrefix(line, "split-window ") {
+			splitWindowCall = line
+		}
+	}
+	if newSessionCall == "" {
+		t.Fatalf("no new-session call for the pi session in %v", lines)
+	}
+	if !strings.Contains(newSessionCall, "-e "+GitIdentityEnabledVar+"=1") {
+		t.Errorf("pi new-session call = %q, want -e %s=1", newSessionCall, GitIdentityEnabledVar)
+	}
+	if !strings.Contains(newSessionCall, "-e "+AgentNameVar+"=pi_agents_1-p1") {
+		t.Errorf("pi new-session call = %q, want -e %s=pi_agents_1-p1", newSessionCall, AgentNameVar)
+	}
+	if splitWindowCall == "" {
+		t.Fatalf("no split-window call for pi pane 2 in %v", lines)
+	}
+	if !strings.Contains(splitWindowCall, "-e "+AgentNameVar+"=pi_agents_1-p2") {
+		t.Errorf("pi split-window call = %q, want a distinct -e %s=pi_agents_1-p2", splitWindowCall, AgentNameVar)
+	}
+	if strings.Contains(splitWindowCall, "AGENT_NAME=pi_agents_1-p1") {
+		t.Errorf("pi pane 2 reused pane 1's AGENT_NAME: %q", splitWindowCall)
+	}
+}
+
 // TestCreateSessions_DefaultPlanMatchesPreExistingBehavior exercises the
 // CreateSessions -> createSession wiring (plan.IdentityEnvEnabled), not
 // createSession directly: a SwarmPlan built without setting

@@ -315,6 +315,7 @@ func TestValidateAgentType(t *testing.T) {
 		{"cursor", false},
 		{"ws", false},
 		{"ollama", false},
+		{"pi", false},
 		{"invalid", true},
 		{"", true},
 	}
@@ -1562,6 +1563,31 @@ func TestSwarmLaunch_AntigravityPinnedModelPassthrough(t *testing.T) {
 	}
 	if !strings.Contains(shell, "--dangerously-skip-permissions") {
 		t.Errorf("BuildLaunchCommand(agy).ToShellCommand() = %q, missing auto-approve flag", shell)
+	}
+}
+
+// TestSwarmLaunch_PiRecognizedAndLaunchable is the bd-ut0 proof that a pi
+// pane allocated for a swarm launches as `pi` (its shell alias carries the
+// model and approval flags, the cc/cod/gmi convention) rather than falling
+// out of every switch as an unrecognized type.
+func TestSwarmLaunch_PiRecognizedAndLaunchable(t *testing.T) {
+	if got := normalizedSwarmLaunchableAgentType("pi"); got != "pi" {
+		t.Fatalf("normalizedSwarmLaunchableAgentType(pi) = %q, want pi", got)
+	}
+	if err := ValidateAgentType("pi"); err != nil {
+		t.Fatalf("ValidateAgentType(pi) = %v, want nil", err)
+	}
+
+	built := NewLaunchCommandBuilder().BuildLaunchCommand(PaneSpec{
+		Index:     1,
+		AgentType: "pi",
+		LaunchCmd: "pi",
+	}, "/tmp/project")
+	if built.Binary != "pi" {
+		t.Errorf("BuildLaunchCommand(pi).Binary = %q, want pi", built.Binary)
+	}
+	if got := built.ToShellCommand(); got != "pi" {
+		t.Errorf("BuildLaunchCommand(pi).ToShellCommand() = %q, want pi", got)
 	}
 }
 

@@ -260,6 +260,7 @@ type SwarmPlanOutput struct {
 	TotalCod        int                `json:"total_cod"`
 	TotalGmi        int                `json:"total_gmi"`
 	TotalAgy        int                `json:"total_agy"`
+	TotalPi         int                `json:"total_pi"`
 	TotalAgents     int                `json:"total_agents"`
 	SessionsPerType int                `json:"sessions_per_type"`
 	PanesPerSession int                `json:"panes_per_session"`
@@ -282,6 +283,7 @@ type AllocationOutput struct {
 	CodAgents   int    `json:"cod_agents"`
 	GmiAgents   int    `json:"gmi_agents"`
 	AgyAgents   int    `json:"agy_agents"`
+	PiAgents    int    `json:"pi_agents"`
 	TotalAgents int    `json:"total_agents"`
 }
 
@@ -691,6 +693,7 @@ func buildSwarmPlanOutput(plan *swarm.SwarmPlan, dryRun bool) SwarmPlanOutput {
 		TotalCod:        plan.TotalCod,
 		TotalGmi:        plan.TotalGmi,
 		TotalAgy:        plan.TotalAgy,
+		TotalPi:         plan.TotalPi,
 		TotalAgents:     plan.TotalAgents,
 		SessionsPerType: plan.SessionsPerType,
 		PanesPerSession: plan.PanesPerSession,
@@ -710,6 +713,7 @@ func buildSwarmPlanOutput(plan *swarm.SwarmPlan, dryRun bool) SwarmPlanOutput {
 			CodAgents:   alloc.CodAgents,
 			GmiAgents:   alloc.GmiAgents,
 			AgyAgents:   alloc.AgyAgents,
+			PiAgents:    alloc.PiAgents,
 			TotalAgents: alloc.TotalAgents,
 		})
 	}
@@ -737,8 +741,8 @@ func buildSwarmPlanOutput(plan *swarm.SwarmPlan, dryRun bool) SwarmPlanOutput {
 func printSwarmPlan(out SwarmPlanOutput) {
 	printSwarmHeader("Swarm Plan")
 	fmt.Printf("  Scan Directory: %s\n", out.ScanDir)
-	fmt.Printf("  Total Agents:   %d (CC: %d, Codex: %d, Gemini: %d, Antigravity: %d)\n",
-		out.TotalAgents, out.TotalCC, out.TotalCod, out.TotalGmi, out.TotalAgy)
+	fmt.Printf("  Total Agents:   %d (CC: %d, Codex: %d, Gemini: %d, Antigravity: %d, pi: %d)\n",
+		out.TotalAgents, out.TotalCC, out.TotalCod, out.TotalGmi, out.TotalAgy, out.TotalPi)
 	fmt.Printf("  Sessions:       %d per type, %d panes max each\n",
 		out.SessionsPerType, out.PanesPerSession)
 	fmt.Println()
@@ -746,9 +750,9 @@ func printSwarmPlan(out SwarmPlanOutput) {
 	printSwarmHeader("Project Allocations")
 	for _, alloc := range out.Allocations {
 		tierStr := fmt.Sprintf("T%d", alloc.Tier)
-		fmt.Printf("  %-20s [%s] %d beads → CC:%d Cod:%d Gmi:%d Agy:%d\n",
+		fmt.Printf("  %-20s [%s] %d beads → CC:%d Cod:%d Gmi:%d Agy:%d Pi:%d\n",
 			alloc.Project, tierStr, alloc.OpenBeads,
-			alloc.CCAgents, alloc.CodAgents, alloc.GmiAgents, alloc.AgyAgents)
+			alloc.CCAgents, alloc.CodAgents, alloc.GmiAgents, alloc.AgyAgents, alloc.PiAgents)
 	}
 	fmt.Println()
 
