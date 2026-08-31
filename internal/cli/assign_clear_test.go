@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -1120,5 +1122,325 @@ func TestClearPaneEnvelopeSubcommand(t *testing.T) {
 	}
 	if envelope.Data.Pane == nil || *envelope.Data.Pane != 3 {
 		t.Error("Expected Pane to be 3")
+	}
+}
+
+// ============================================================================
+// Orphaned Beads claim recovery (bd-1zn)
+// ============================================================================
+
+type orphanedClaimReleaseRecorder struct {
+	calls    int
+	beadID   string
+	actor    string
+	project  string
+	released bool
+	err      error
+	release  func(context.Context, string, string, string) (bool, error)
+}
+
+func (r *orphanedClaimReleaseRecorder) record(_ context.Context, project, beadID, actor string) (bool, error) {
+	r.calls++
+	r.project, r.beadID, r.actor = project, beadID, actor
+	if r.release == nil {
+		return r.released, r.err
+	}
+	return r.release(context.Background(), project, beadID, actor)
+}
+
+func stubOrphanedClaimLookups(t *testing.T, details *bv.BeadAssignmentDetails, detailsErr error, recorder *orphanedClaimReleaseRecorder, projectDir string) {
+	t.Helper()
+	previousDetails := getBeadAssignmentDetailsForAssignment
+	previousRelease := releaseBeadClaimForAssignment
+	previousRepo := assignRepoPath
+	t.Cleanup(func() {
+		getBeadAssignmentDetailsForAssignment = previousDetails
+		releaseBeadClaimForAssignment = previousRelease
+		assignRepoPath = previousRepo
+	})
+	getBeadAssignmentDetailsForAssignment = func(context.Context, string, string) (*bv.BeadAssignmentDetails, error) {
+		if detailsErr != nil {
+			return nil, detailsErr
+		}
+		return details, nil
+	}
+	releaseBeadClaimForAssignment = func(ctx context.Context, project, beadID, actor string) (bool, error) {
+		return recorder.record(ctx, project, beadID, actor)
+	}
+	assignRepoPath = projectDir
+}
+
+func runClearJSONForTest(t *testing.T, session string, beadIDs ...string) (ClearAssignmentsEnvelope, error) {
+	t.Helper()
+	return captureClearEnvelopeForTest(t, func() error {
+		store, err := assignment.LoadStoreStrict(session)
+		if err != nil {
+			return err
+		}
+		cmd := &cobra.Command{}
+		cmd.SetContext(context.Background())
+		return runClearSelectedAssignmentsFromStore(cmd, store, session, beadIDs, "clear")
+	})
+}
+
+func captureClearEnvelopeForTest(t *testing.T, run func() error) (ClearAssignmentsEnvelope, error) {
+	t.Helper()
+	previousJSON := jsonOutput
+	previousClear := assignClear
+	previousClearPane := assignClearPane
+	previousClearFailed := assignClearFailed
+	previousForce := assignForce
+	previousReleaseLeases := releaseAssignmentLeases
+	t.Cleanup(func() {
+		jsonOutput = previousJSON
+		assignClear = previousClear
+		assignClearPane = previousClearPane
+		assignClearFailed = previousClearFailed
+		assignForce = previousForce
+		releaseAssignmentLeases = previousReleaseLeases
+	})
+	jsonOutput = true
+	assignClear = ""
+	assignClearPane = ""
+	assignClearFailed = false
+	assignForce = false
+	releaseAssignmentLeases = func(context.Context, string, *assignment.Assignment) ([]string, error) { return nil, nil }
+
+	output, runErr := captureStdout(t, run)
+	var envelope ClearAssignmentsEnvelope
+	if decodeErr := json.Unmarshal([]byte(output), &envelope); decodeErr != nil {
+		t.Fatalf("decode clear envelope: %v\noutput=%s", decodeErr, output)
+	}
+	return envelope, runErr
+}
+
+// TestClearRecordAbsentReleasesOwnOrphanedBeadsClaim proves the bd-1zn
+// recovery: a bead with no durable record but a standing ntm-created br claim
+// is released through the tracker lookup, and the result names the path.
+func TestClearRecordAbsentReleasesOwnOrphanedBeadsClaim(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "orphan-own-claim"
+		beadID  = "aub-xus.1"
+		actor   = "BlueLake/ntm-0123456789ab"
+	)
+	recorder := &orphanedClaimReleaseRecorder{released: true}
+	projectDir := t.TempDir()
+	stubOrphanedClaimLookups(t, &bv.BeadAssignmentDetails{ID: beadID, Assignee: actor}, nil, recorder, projectDir)
+
+	envelope, runErr := runClearJSONForTest(t, session, beadID)
+	if runErr != nil {
+		t.Fatalf("clear record-absent own claim: %v", runErr)
+	}
+	if !envelope.Success || envelope.Data == nil || envelope.Data.Summary.ClearedCount != 1 {
+		t.Fatalf("orphaned-claim clear envelope = %+v", envelope)
+	}
+	cleared := envelope.Data.Cleared[0]
+	if !cleared.Success || cleared.ReleasedVia != clearReleasedViaOrphanedBeadsClaim || cleared.PreviousAgent != actor {
+		t.Fatalf("cleared result = %+v", cleared)
+	}
+	if recorder.calls != 1 || recorder.beadID != beadID || recorder.actor != actor || recorder.project != projectDir {
+		t.Fatalf("claim release call = %+v", recorder)
+	}
+}
+
+// TestClearRecordAbsentForeignClaimRefuses proves another actor's claim is
+// never released: the tracker lookup refuses without calling the release.
+func TestClearRecordAbsentForeignClaimRefuses(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "orphan-foreign-claim"
+		beadID  = "aub-xus.2"
+	)
+	recorder := &orphanedClaimReleaseRecorder{released: true}
+	stubOrphanedClaimLookups(t, &bv.BeadAssignmentDetails{ID: beadID, Assignee: "EmeraldCat", Status: "in_progress"}, nil, recorder, t.TempDir())
+	recorder.release = func(context.Context, string, string, string) (bool, error) {
+		t.Fatal("foreign claim was released through the orphaned-claim fallback")
+		return false, nil
+	}
+
+	envelope, _ := runClearJSONForTest(t, session, beadID)
+	if envelope.Success || envelope.Data == nil || envelope.Data.Summary.ClearedCount != 0 {
+		t.Fatalf("foreign-claim clear envelope = %+v", envelope)
+	}
+	cleared := envelope.Data.Cleared[0]
+	if cleared.Success || cleared.Error != "assignment not found or already completed" {
+		t.Fatalf("foreign-claim result = %+v", cleared)
+	}
+}
+
+// TestClearRecordAbsentUnclaimedBeadRefuses keeps the unclaimed record-absent
+// case reporting not-found.
+func TestClearRecordAbsentUnclaimedBeadRefuses(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "orphan-unclaimed"
+		beadID  = "aub-xus.3"
+	)
+	recorder := &orphanedClaimReleaseRecorder{released: true}
+	recorder.release = func(context.Context, string, string, string) (bool, error) {
+		t.Fatal("unclaimed bead reached the claim release")
+		return false, nil
+	}
+	stubOrphanedClaimLookups(t, &bv.BeadAssignmentDetails{ID: beadID, Assignee: ""}, nil, recorder, t.TempDir())
+
+	envelope, _ := runClearJSONForTest(t, session, beadID)
+	if envelope.Success || envelope.Data == nil || envelope.Data.Summary.ClearedCount != 0 {
+		t.Fatalf("unclaimed clear envelope = %+v", envelope)
+	}
+	if got := envelope.Data.Cleared[0].Error; got != "assignment not found or already completed" {
+		t.Fatalf("unclaimed result error = %q", got)
+	}
+}
+
+// TestClearRecordAbsentReleaseCASRefusalFails proves a mid-flight actor
+// change is a loud failure instead of a claimed success.
+func TestClearRecordAbsentReleaseCASRefusalFails(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "orphan-cas-refusal"
+		beadID  = "aub-xus.4"
+	)
+	recorder := &orphanedClaimReleaseRecorder{released: false}
+	stubOrphanedClaimLookups(t, &bv.BeadAssignmentDetails{ID: beadID, Assignee: "BlueLake/ntm-0123456789ab"}, nil, recorder, t.TempDir())
+
+	envelope, _ := runClearJSONForTest(t, session, beadID)
+	if envelope.Success || envelope.Data == nil || envelope.Data.Summary.ClearedCount != 0 {
+		t.Fatalf("CAS-refusal clear envelope = %+v", envelope)
+	}
+	cleared := envelope.Data.Cleared[0]
+	if cleared.Success || !strings.Contains(cleared.Error, "compare-and-set refused") {
+		t.Fatalf("CAS-refusal result = %+v", cleared)
+	}
+}
+
+// TestClearRecordAbsentInspectionFailureFailsLoud proves a tracker lookup
+// error is surfaced, never silently reported as "not found".
+func TestClearRecordAbsentInspectionFailureFailsLoud(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "orphan-inspection-failure"
+		beadID  = "aub-xus.5"
+	)
+	recorder := &orphanedClaimReleaseRecorder{}
+	recorder.release = func(context.Context, string, string, string) (bool, error) {
+		t.Fatal("unverified bead reached the claim release")
+		return false, nil
+	}
+	stubOrphanedClaimLookups(t, nil, errors.New("br unavailable"), recorder, t.TempDir())
+
+	envelope, _ := runClearJSONForTest(t, session, beadID)
+	if envelope.Success || envelope.Data == nil || envelope.Data.Summary.ClearedCount != 0 {
+		t.Fatalf("inspection-failure clear envelope = %+v", envelope)
+	}
+	if got := envelope.Data.Cleared[0].Error; !strings.Contains(got, "inspect Beads claim for record-absent") {
+		t.Fatalf("inspection-failure result error = %q", got)
+	}
+}
+
+// TestClearCompletedRecordWithoutForceSkipsTrackerLookup keeps the force gate
+// on completed rows: the orphaned-claim fallback must not bypass it.
+func TestClearCompletedRecordWithoutForceSkipsTrackerLookup(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "orphan-completed-row"
+		beadID  = "ntm-completed"
+	)
+	store := assignment.NewStore(session)
+	if _, err := store.Assign(beadID, "Completed", 1, "codex", "BlueLake", "work"); err != nil {
+		t.Fatalf("assign completed row: %v", err)
+	}
+	if err := store.MarkCompleted(beadID); err != nil {
+		t.Fatalf("mark completed row: %v", err)
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("save completed row: %v", err)
+	}
+	recorder := &orphanedClaimReleaseRecorder{}
+	recorder.release = func(context.Context, string, string, string) (bool, error) {
+		t.Fatal("force-gated completed row reached the orphaned-claim fallback")
+		return false, nil
+	}
+	stubOrphanedClaimLookups(t, &bv.BeadAssignmentDetails{ID: beadID, Assignee: "BlueLake/ntm-0123456789ab"}, nil, recorder, t.TempDir())
+
+	envelope, _ := runClearJSONForTest(t, session, beadID)
+	if envelope.Success || envelope.Data == nil || len(envelope.Data.Cleared) != 1 {
+		t.Fatalf("completed-row clear envelope = %+v", envelope)
+	}
+	if got := envelope.Data.Cleared[0].Error; got != "assignment not found or already completed" {
+		t.Fatalf("completed-row result error = %q", got)
+	}
+}
+
+// TestClearRecordPresentReportsAssignmentRecordPath proves the record-present
+// path is unchanged apart from naming its release path.
+func TestClearRecordPresentReportsAssignmentRecordPath(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "record-present-via"
+		beadID  = "ntm-row"
+	)
+	store := assignment.NewStore(session)
+	if _, err := store.Assign(beadID, "Row", 1, "codex", "BlueLake", "work"); err != nil {
+		t.Fatalf("assign row: %v", err)
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("save row: %v", err)
+	}
+	recorder := &orphanedClaimReleaseRecorder{}
+	recorder.release = func(context.Context, string, string, string) (bool, error) {
+		t.Fatal("record-present clear must not release through the tracker fallback")
+		return false, nil
+	}
+	stubOrphanedClaimLookups(t, nil, errors.New("tracker lookup must not run for a recorded row"), recorder, t.TempDir())
+
+	envelope, runErr := runClearJSONForTest(t, session, beadID)
+	if runErr != nil {
+		t.Fatalf("clear recorded row: %v", runErr)
+	}
+	if !envelope.Success || envelope.Data == nil || envelope.Data.Summary.ClearedCount != 1 {
+		t.Fatalf("recorded-row clear envelope = %+v", envelope)
+	}
+	if got := envelope.Data.Cleared[0].ReleasedVia; got != clearReleasedViaAssignmentRecord {
+		t.Fatalf("recorded-row released_via = %q", got)
+	}
+}
+
+// TestAtomicDispatchFailureClaimNote pins the post-claim failure note: it is
+// emitted only when the durable record proves the claim landed, and it names
+// the guaranteed recovery command.
+func TestAtomicDispatchFailureClaimNote(t *testing.T) {
+	now := time.Now().UTC()
+	claimed := &assignment.Assignment{
+		BeadID:         "aub-xus.1",
+		IdempotencyKey: strings.Repeat("ab", 32),
+		ClaimState:     assignment.ClaimClaimed,
+		ClaimedAt:      &now,
+	}
+	tests := []struct {
+		name    string
+		record  *assignment.Assignment
+		session string
+		want    string
+	}{
+		{name: "claimed", record: claimed, session: "proj", want: `release it with "ntm assign proj --clear aub-xus.1"`},
+		{name: "claim pending", record: &assignment.Assignment{IdempotencyKey: "k", ClaimState: assignment.ClaimPending}, want: ""},
+		{name: "claim absent", record: &assignment.Assignment{IdempotencyKey: "k"}, want: ""},
+		{name: "no key", record: &assignment.Assignment{ClaimState: assignment.ClaimClaimed}, want: ""},
+		{name: "nil record", record: nil, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := atomicDispatchFailureClaimNote(test.record, test.session, "aub-xus.1")
+			if test.want == "" {
+				if got != "" {
+					t.Fatalf("note = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, "intentionally kept") || !strings.Contains(got, test.want) {
+				t.Fatalf("note = %q, want it to contain %q", got, test.want)
+			}
+		})
 	}
 }

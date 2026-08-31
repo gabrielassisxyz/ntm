@@ -2880,3 +2880,66 @@ func TestAtomicOperationLockReleaseCancelRaceFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestIsStableClaimActor pins the claim-actor predicate the --clear fallback
+// relies on (bd-1zn): only an actor with the exact StableClaimActor shape may
+// ever be recognized as an ntm-created claim when the durable record is gone.
+func TestIsStableClaimActor(t *testing.T) {
+	idempotencyKey := strings.Repeat("0123456789abcdef", 4)
+	tests := []struct {
+		name  string
+		actor string
+		want  bool
+	}{
+		{name: "canonical ntm actor", actor: StableClaimActor("BlueLake", idempotencyKey), want: true},
+		{name: "ntm-default base", actor: StableClaimActor("", idempotencyKey), want: true},
+		{name: "foreign plain actor", actor: "EmeraldCat", want: false},
+		{name: "foreign suffix actor", actor: "EmeraldCat/other-tool-abc123", want: false},
+		{name: "empty actor", actor: "", want: false},
+		{name: "marker only", actor: "/ntm-", want: false},
+		{name: "short key", actor: "BlueLake/ntm-0123456789a", want: false},
+		{name: "long key", actor: "BlueLake/ntm-0123456789abc", want: false},
+		{name: "uppercase key", actor: "BlueLake/ntm-0123456789AB", want: false},
+		{name: "non-hex key", actor: "BlueLake/ntm-hello-world-", want: false},
+		{name: "marker mid-actor only", actor: "BlueLake/ntm-abc123456789extra", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsStableClaimActor(test.actor); got != test.want {
+				t.Fatalf("IsStableClaimActor(%q) = %v, want %v", test.actor, got, test.want)
+			}
+			stable := StableClaimActor(test.actor, idempotencyKey)
+			if test.actor != "" && strings.Contains(test.actor, "/ntm-") {
+				return // non-canonical bases are allowed to pass through unchanged
+			}
+			if !IsStableClaimActor(stable) {
+				t.Fatalf("StableClaimActor(x) = %q is not recognized as stable", stable)
+			}
+		})
+	}
+}
+
+// TestEffectiveClaimStatePrefersExplicitState keeps the exported read used by
+// the dispatch-failure note honest for both modern and legacy rows.
+func TestEffectiveClaimStatePrefersExplicitState(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name string
+		row  *Assignment
+		want ClaimState
+	}{
+		{name: "nil", row: nil, want: ClaimPending},
+		{name: "explicit claimed", row: &Assignment{ClaimState: ClaimClaimed}, want: ClaimClaimed},
+		{name: "explicit pending", row: &Assignment{ClaimState: ClaimPending, ClaimedAt: &now}, want: ClaimPending},
+		{name: "legacy claimed-at", row: &Assignment{ClaimedAt: &now}, want: ClaimClaimed},
+		{name: "legacy assigned status", row: &Assignment{Status: StatusAssigned}, want: ClaimClaimed},
+		{name: "legacy bare row", row: &Assignment{}, want: ClaimPending},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := EffectiveClaimState(test.row); got != test.want {
+				t.Fatalf("EffectiveClaimState() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
