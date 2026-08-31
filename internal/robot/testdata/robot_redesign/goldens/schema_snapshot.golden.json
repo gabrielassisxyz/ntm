@@ -1440,6 +1440,10 @@
             "description": "Open beads",
             "type": "integer"
           },
+          "pi_agents": {
+            "description": "Pi agents",
+            "type": "integer"
+          },
           "project": {
             "description": "Project",
             "type": "string"
@@ -1456,7 +1460,8 @@
           "cc_agents",
           "cod_agents",
           "gmi_agents",
-          "agy_agents"
+          "agy_agents",
+          "pi_agents"
         ],
         "type": "object"
       },

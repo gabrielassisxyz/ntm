@@ -4854,6 +4854,7 @@ type SwarmPlanAllocation struct {
 	CodAgents int    `json:"cod_agents"`
 	GmiAgents int    `json:"gmi_agents"`
 	AgyAgents int    `json:"agy_agents"`
+	PiAgents  int    `json:"pi_agents"`
 }
 
 type SwarmSessionInfo struct {
@@ -6112,6 +6113,7 @@ func buildSwarmSnapshotPlan(cfg *config.Config, fallbackTotalAgents int) SwarmSn
 			CodAgents: alloc.CodAgents,
 			GmiAgents: alloc.GmiAgents,
 			AgyAgents: alloc.AgyAgents,
+			PiAgents:  alloc.PiAgents,
 		})
 	}
 

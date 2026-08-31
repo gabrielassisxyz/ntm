@@ -21,6 +21,7 @@ type ProjectAllocation struct {
 	CodAgents   int              `json:"cod_agents"`
 	GmiAgents   int              `json:"gmi_agents"`
 	AgyAgents   int              `json:"agy_agents"`
+	PiAgents    int              `json:"pi_agents"`
 	TotalAgents int              `json:"total_agents"`
 }
 
@@ -38,6 +39,7 @@ type SwarmPlan struct {
 	TotalCod    int `json:"total_cod"`
 	TotalGmi    int `json:"total_gmi"`
 	TotalAgy    int `json:"total_agy"`
+	TotalPi     int `json:"total_pi"`
 	TotalAgents int `json:"total_agents"`
 
 	// PlannedAgents is how many panes the generated sessions actually hold.

@@ -62,8 +62,9 @@ func TestAllocationSpecTotal(t *testing.T) {
 	}{
 		{"zero", AllocationSpec{}, 0},
 		{"cc only", AllocationSpec{CC: 3}, 3},
-		{"all types", AllocationSpec{CC: 4, Cod: 4, Gmi: 2}, 10},
+		{"all types", AllocationSpec{CC: 4, Cod: 4, Gmi: 2, Pi: 3}, 13},
 		{"cod and gmi", AllocationSpec{Cod: 2, Gmi: 3}, 5},
+		{"pi only", AllocationSpec{Pi: 4}, 4},
 	}
 
 	for _, tt := range tests {
@@ -348,10 +349,11 @@ func TestValidateAllocationSpec_AllBranches(t *testing.T) {
 		wantErr bool
 	}{
 		{"all zero valid", AllocationSpec{}, false},
-		{"all positive valid", AllocationSpec{CC: 2, Cod: 3, Gmi: 1}, false},
+		{"all positive valid", AllocationSpec{CC: 2, Cod: 3, Gmi: 1, Pi: 2}, false},
 		{"negative CC", AllocationSpec{CC: -1, Cod: 0, Gmi: 0}, true},
 		{"negative Cod", AllocationSpec{CC: 0, Cod: -1, Gmi: 0}, true},
 		{"negative Gmi", AllocationSpec{CC: 0, Cod: 0, Gmi: -1}, true},
+		{"negative Pi", AllocationSpec{CC: 0, Cod: 0, Gmi: 0, Pi: -1}, true},
 	}
 
 	for _, tc := range tests {

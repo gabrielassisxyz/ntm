@@ -536,10 +536,10 @@ func (l *AgentLauncher) LaunchAgentWithContext(session string, pane int, agentTy
 // ValidateAgentType checks if the given agent type is valid.
 func ValidateAgentType(agentType string) error {
 	switch normalizedSwarmLaunchableAgentType(agentType) {
-	case AgentCC, AgentCOD, AgentGMI, "agy", "grok", "cursor", "windsurf", "aider", "ollama":
+	case AgentCC, AgentCOD, AgentGMI, "agy", "pi", "grok", "cursor", "windsurf", "aider", "ollama":
 		return nil
 	default:
-		return fmt.Errorf("invalid agent type %q: must resolve to one of %s, %s, %s, agy, grok, cursor, windsurf, aider, ollama",
+		return fmt.Errorf("invalid agent type %q: must resolve to one of %s, %s, %s, agy, pi, grok, cursor, windsurf, aider, ollama",
 			agentType, AgentCC, AgentCOD, AgentGMI)
 	}
 }
@@ -550,6 +550,7 @@ var DefaultAgentCommands = map[string]string{
 	"cod":      "codex",        // OpenAI Codex CLI
 	"gmi":      "gemini",       // Google Gemini CLI
 	"agy":      "agy",          // Antigravity CLI (resolved via config.AntigravityBinary at launch)
+	"pi":       "pi",           // pi CLI — OpenAI-compatible client pointed at a local proxy; flags/model ride the `pi` shell alias, like cc/cod/gmi
 	"grok":     "grok",         // xAI Grok Build CLI
 	"cursor":   "cursor-agent", // Cursor Agent CLI (not the GUI `cursor` launcher)
 	"windsurf": "windsurf",     // Windsurf CLI
@@ -567,6 +568,9 @@ var DefaultAgentArgs = map[string][]string{
 	"cc":  {},
 	"cod": {},
 	"gmi": {},
+	// pi carries its model and approval flags on the `pi` shell alias, the
+	// same convention cc/cod/gmi follow — no default args here.
+	"pi": {},
 	// agy's model is hard-pinned (config.AntigravityRequiredModel); the shell
 	// alias does NOT carry the pin, so it must ride the default args or a
 	// swarm-launched agy pane silently runs whatever model the CLI defaults
@@ -835,6 +839,7 @@ func normalizedSwarmLaunchableAgentType(agentType string) string {
 		agent.AgentTypeCodex,
 		agent.AgentTypeGemini,
 		agent.AgentTypeAntigravity,
+		agent.AgentTypePi,
 		agent.AgentTypeGrok,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,

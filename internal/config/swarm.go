@@ -50,11 +50,12 @@ type AllocationSpec struct {
 	CC  int `toml:"cc"`  // Claude Code agents
 	Cod int `toml:"cod"` // Codex agents
 	Gmi int `toml:"gmi"` // Gemini agents
+	Pi  int `toml:"pi"`  // pi agents (OpenAI-compatible client on a local proxy; litellm/ollama-cloud swarms)
 }
 
 // Total returns the total number of agents in this allocation.
 func (a AllocationSpec) Total() int {
-	return a.CC + a.Cod + a.Gmi
+	return a.CC + a.Cod + a.Gmi + a.Pi
 }
 
 // DefaultSwarmConfig returns SwarmConfig with sensible defaults.
@@ -149,6 +150,9 @@ func validateAllocationSpec(name string, spec AllocationSpec) error {
 	}
 	if spec.Gmi < 0 {
 		return fmt.Errorf("%s.gmi must be non-negative, got %d", name, spec.Gmi)
+	}
+	if spec.Pi < 0 {
+		return fmt.Errorf("%s.pi must be non-negative, got %d", name, spec.Pi)
 	}
 	return nil
 }

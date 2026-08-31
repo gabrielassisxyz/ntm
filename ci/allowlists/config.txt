@@ -398,14 +398,17 @@ swarm.stagger_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterRe
 swarm.tier1_allocation.cc	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier1_allocation.cod	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier1_allocation.gmi	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier1_allocation.pi	bd-ut0	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier1_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier2_allocation.cc	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier2_allocation.cod	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier2_allocation.gmi	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier2_allocation.pi	bd-ut0	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier2_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier3_allocation.cc	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier3_allocation.cod	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.tier3_allocation.gmi	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier3_allocation.pi	bd-ut0	live key awaiting a RegisterReader claim from its consuming package
 theme	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 tmux.activity_indicators.active_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 tmux.activity_indicators.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
