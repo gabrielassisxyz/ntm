@@ -21,6 +21,14 @@ const (
 	StateError AgentState = "error"
 	// StateModal indicates the agent is waiting on an interactive modal or prompt
 	StateModal AgentState = "modal"
+	// StateFrozen indicates the agent process is hung: its CPU time is not
+	// advancing AND the screen fingerprint is not changing across consecutive
+	// samples. Distinct from StateIdle (a process at a prompt that still has
+	// CPU headroom) and StateWorking (a process producing output / spinning)
+	// because killing the latter two is destructive, while a frozen pane is
+	// a hung-CLI symptom (e.g. pi without a call timeout) and the operator
+	// wants it surfaced, not silently classified as one of the safe states.
+	StateFrozen AgentState = "frozen"
 	// StateUnknown indicates the state cannot be determined
 	StateUnknown AgentState = "unknown"
 )
@@ -36,6 +44,11 @@ func (s AgentState) Icon() string {
 		return "🔴" // red circle
 	case StateModal:
 		return "🟡" // yellow circle
+	case StateFrozen:
+		return "🧊" // snowflake — visually distinct from error so a frozen pane
+		// is not misread as a failed one
+	case StateUnknown:
+		return "⚫" // black circle
 	default:
 		return "⚫" // black circle
 	}

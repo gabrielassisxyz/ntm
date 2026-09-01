@@ -2035,3 +2035,8 @@ internal/cli/root.go:RootCommand	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10
 # permanent: test-helper
 internal/cass/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/cass/client_test.go and internal/tui/components/cass_search_test.go
 internal/caut/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/caut/client_test.go
+internal/status/frozen.go:FrozenDetector.MinSamples	bd-3b9	frozen-state detector public surface (bd-3b9); the held-claim actor calls NewFrozenDetector+MinSamples from outside the cmd/ntm graph
+internal/status/frozen.go:FrozenDetector.Reset	bd-3b9	frozen-state detector public surface (bd-3b9); held-claim actor resets per-pane state when a pane is respawned
+internal/status/frozen.go:FrozenDetector.ResetAll	bd-3b9	frozen-state detector public surface (bd-3b9); tests use this; held-claim actor may use it for global resets
+internal/status/frozen.go:NewFrozenDetector	bd-3b9	frozen-state detector public surface (bd-3b9); held-claim actor constructs the detector with the default min-samples window
+internal/status/frozen.go:NewFrozenDetectorWithMinSamples	bd-3b9	frozen-state detector public surface (bd-3b9); held-claim actor constructs the detector with a custom min-samples window

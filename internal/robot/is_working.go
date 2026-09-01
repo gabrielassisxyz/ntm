@@ -55,6 +55,15 @@ type IsWorkingOptions struct {
 	// casr and walk provider session directories, and the default poll path
 	// must stay free of that cost.
 	IncludeSessionID bool
+
+	// FrozenDetector, when non-nil, is sampled once per pane inside
+	// GetIsWorking and its verdict surfaces as PaneWorkStatus.IsFrozen
+	// (bd-3b9). The detector is owned by the caller — a long-lived
+	// supervisor or a test fixture — and is NOT created inside this
+	// function, because the very first observation carries no comparison
+	// information and would otherwise be wasted. When nil (the default),
+	// IsFrozen is left absent and the existing JSON output is unchanged.
+	FrozenDetector *statuspkg.FrozenDetector
 }
 
 // DefaultIsWorkingOptions returns sensible defaults.
@@ -126,6 +135,17 @@ type PaneWorkStatus struct {
 	// QueuedMessages: the TUI reports queued not-yet-processed messages.
 	UnsubmittedInput bool `json:"unsubmitted_input,omitempty"`
 	QueuedMessages   bool `json:"queued_messages,omitempty"`
+
+	// IsFrozen is the dedicated frozen-pane verdict (bd-3b9). True when the
+	// pane's process cputime and screen fingerprint are both flat across
+	// the last N samples the FrozenDetector was given. Distinct from
+	// IsWorking (the pane is producing output) and IsIdle (the pane is
+	// at a prompt and ready for input) because a frozen pane has neither
+	// property — killing it is destructive, but the operator needs to
+	// know it exists. Absent (false) when no FrozenDetector was supplied
+	// to this GetIsWorking call, so a default tick returns the same JSON
+	// shape as before this field was added.
+	IsFrozen bool `json:"is_frozen,omitempty"`
 
 	// SemanticProgress is the OPTIONAL, additive ground-truth signal (#199),
 	// present only under --semantic and omitted entirely otherwise. It is
@@ -567,6 +587,20 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			status.Indicators.Limit = []string{}
 		}
 
+		// Frozen-pane verdict (bd-3b9). When a FrozenDetector was supplied,
+		// sample the pane's process + screen this tick and ask the detector
+		// for its verdict. The detector is sticky: once it has seen N
+		// consecutive flat samples it stays frozen until either signal
+		// moves, which is the right shape for the held-claim actor (a pane
+		// frozen for 30s is still frozen 1s later unless something
+		// changed). When frozen, the pane is NEITHER working NOR idle — a
+		// frozen pane is wedged and a fresh "idle at the prompt" reading
+		// cannot be trusted, so IsWorking and IsIdle are both cleared and
+		// the recommendation pivots to FROZEN.
+		if opts.FrozenDetector != nil {
+			applyFrozenVerdict(&status, opts.FrozenDetector, paneObservation, content, time.Now())
+		}
+
 		if opts.Verbose {
 			status.RawSample = state.RawSample
 		}
@@ -767,6 +801,53 @@ func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.
 		workStatus.IsIdle = false
 		workStatus.Recommendation = string(agent.RecommendUnknown)
 		workStatus.RecommendationReason = "Canonical live observation could not determine current state"
+	}
+}
+
+func applyFrozenVerdict(workStatus *PaneWorkStatus, detector *statuspkg.FrozenDetector, observation statuspkg.PaneObservation, content string, now time.Time) {
+	if workStatus == nil || detector == nil {
+		return
+	}
+	// The frozen sampler keys off the agent process's CPU clock, falling
+	// back to the shell PID when the agent's PID is not known. Reading
+	// the shell PID alone would conflate "shell is idle" with "agent is
+	// wedged"; reading the child (the agent itself) is the signal that
+	// matches the brief. process.GetChildPID is the same source the
+	// liveness path uses and is cheap on Linux.
+	pid := observation.Metadata.PID
+	if child := process.GetChildPID(pid); child > 0 {
+		pid = child
+	}
+	detector.Observe(observation.Pane.StableKey(), content, pid, now)
+	frozen, ok := detector.Classification(observation.Pane.StableKey())
+	if !ok || !frozen {
+		return
+	}
+	// Pane is frozen: it is NOT working (no progress) and NOT idle (the
+	// prompt it shows may be a stale "Working..." spinner, not a fresh
+	// idle prompt). A frozen pane is held-claim-actionable, which is why
+	// Recommendation pivots to FROZEN instead of the safe-to-restart
+	// default an idle pane would otherwise show. The IndicatorBasis is
+	// the audit token the diff says the surface must expose, so callers
+	// can confirm the verdict came from the frozen sampler rather than
+	// from the working/idle parser.
+	workStatus.IsWorking = false
+	workStatus.IsIdle = false
+	workStatus.IsFrozen = true
+	workStatus.Recommendation = string(agent.RecommendFrozen)
+	workStatus.RecommendationReason = "Pane process cputime and screen fingerprint are both unchanged across consecutive samples (frozen-state sampler)"
+	workStatus.IndicatorBasis = "frozen_pane"
+	// Preserve any explicit rate-limit / error verdict; the brief says
+	// the frozen state is "distinct from working and idle", not "above
+	// every other verdict". Rate-limit and error wins because those are
+	// actionable states the operator should know about even when the
+	// underlying process happens to be idle (a rate-limited pane that
+	// also happens to be frozen is still rate-limited, and the operator
+	// should wait rather than restart).
+	if workStatus.IsRateLimited {
+		workStatus.Recommendation = string(agent.RecommendRateLimitedWait)
+		workStatus.RecommendationReason = "Pane is also rate-limited; honor the rate-limit verdict before treating the freeze as actionable"
+		workStatus.IndicatorBasis = "frozen_pane_and_rate_limit"
 	}
 }
 
