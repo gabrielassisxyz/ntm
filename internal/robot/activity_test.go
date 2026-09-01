@@ -3347,6 +3347,64 @@ func TestClassifyWithOutput_CodexQuotaModalVerbatim(t *testing.T) {
 	}
 }
 
+func TestClassifyWithOutput_ShakedownDialogsAreModal(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		fixture   string
+	}{
+		{
+			name:      "codex hooks trust dialog",
+			agentType: "codex",
+			fixture: "Review hooks\n" +
+				"Trust all and continue",
+		},
+		{
+			name:      "agy feedback prompt",
+			agentType: "agy",
+			fixture: "How's the CLI experience so far? Help us improve: [1] Good  [2] Fine  [3] Bad  [0] Skip\n" +
+				"? for shortcuts ... Gemini 3.7 Flash · high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := NewStateClassifier("test-pane", &ClassifierConfig{AgentType: tt.agentType})
+			activity, err := sc.ClassifyWithOutput(tt.fixture)
+			if err != nil {
+				t.Fatalf("ClassifyWithOutput error: %v", err)
+			}
+			if activity.State != StateModal {
+				t.Fatalf("State = %q, want %q", activity.State, StateModal)
+			}
+		})
+	}
+}
+
+func TestClassifyWithOutput_ShakedownPostDialogPromptsAreIdle(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		fixture   string
+	}{
+		{name: "codex prompt", agentType: "codex", fixture: "codex>"},
+		{name: "agy prompt", agentType: "agy", fixture: ">"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := NewStateClassifier("test-pane", &ClassifierConfig{AgentType: tt.agentType})
+			activity, err := sc.ClassifyWithOutput(tt.fixture)
+			if err != nil {
+				t.Fatalf("ClassifyWithOutput error: %v", err)
+			}
+			if activity.State != StateWaiting {
+				t.Fatalf("State = %q, want %q", activity.State, StateWaiting)
+			}
+		})
+	}
+}
+
 // TestClassifyWithOutput_ModalImmediateHysteresis verifies StateModal transitions immediately.
 func TestClassifyWithOutput_ModalImmediateHysteresis(t *testing.T) {
 	sc := NewStateClassifier("test-pane", &ClassifierConfig{
