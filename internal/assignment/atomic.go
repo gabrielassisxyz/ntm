@@ -315,6 +315,21 @@ type DispatchRequest struct {
 type DispatchReceipt struct {
 	DeliveryID string
 	Duration   time.Duration
+	// Delivered is true when the prompt text was confirmed in a post-send
+	// capture of the target pane (bd-ift). When the dispatch transport
+	// reports sent but the capture is empty of the per-assignment marker,
+	// Delivered is false and VerificationError names the missing marker —
+	// the caller treats that as claim_ok_delivery_failed.
+	Delivered bool
+	// VerificationError is set when Delivered is false and verification ran.
+	// It is empty when verification was skipped (e.g., bypass gate) or the
+	// dispatch transport itself failed before any read-back was possible.
+	VerificationError string
+	// DeliveryMarker is the unique-per-attempt token that was injected into
+	// the prompt so the post-send capture can confirm our specific message
+	// landed (distinct from any other pane's output). Empty when verification
+	// was bypassed.
+	DeliveryMarker string
 }
 
 // DispatchPort delivers an already-claimed, already-reserved assignment.
@@ -876,7 +891,13 @@ func (c *AtomicCoordinator) Execute(ctx context.Context, req AtomicRequest) (Ato
 			}
 			switch prior.DispatchState {
 			case DispatchSent:
-				dispatch := DispatchReceipt{DeliveryID: prior.DispatchReceiptID, Duration: prior.DispatchDuration}
+				dispatch := DispatchReceipt{
+					DeliveryID:        prior.DispatchReceiptID,
+					Duration:          prior.DispatchDuration,
+					Delivered:         prior.DispatchDelivered,
+					DeliveryMarker:    prior.DispatchDeliveryMarker,
+					VerificationError: prior.DispatchVerificationError,
+				}
 				if receiptErr := validateDispatchReceipt(dispatch); receiptErr != nil {
 					result.Assignment = prior
 					return result, errors.Join(ErrDispatchOutcomeUnknown, receiptErr)
@@ -2220,6 +2241,14 @@ func (s *AssignmentStore) RecordAtomicDispatchSent(beadID, idempotencyKey, promp
 	a.DispatchedAt = cloneTimePtr(&dispatchedAt)
 	a.DispatchReceiptID = receipt.DeliveryID
 	a.DispatchDuration = receipt.Duration
+	// bd-ift: persist the post-send verdict so the replay path can rebuild
+	// the receipt without re-running the dispatch surface. Without these
+	// fields, a same-intent replay would report Delivered=false even when
+	// the original dispatch succeeded — a silent regression in the
+	// operator-visible verdict.
+	a.DispatchDelivered = receipt.Delivered
+	a.DispatchDeliveryMarker = receipt.DeliveryMarker
+	a.DispatchVerificationError = receipt.VerificationError
 	a.LastDispatchError = ""
 	if err := s.saveLocked(); err != nil {
 		var concurrentMutation *ConcurrentMutationError

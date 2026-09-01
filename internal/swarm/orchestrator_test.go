@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -344,6 +345,57 @@ func TestSwarmOrchestrator_Execute_FiltersFailedSessions(t *testing.T) {
 
 	if injector.lastPlan == nil || len(injector.lastPlan.Sessions) != 1 || injector.lastPlan.Sessions[0].Name != "cc_agents_1" {
 		t.Fatalf("expected injector plan filtered to only cc_agents_1, got %+v", injector.lastPlan)
+	}
+}
+
+// TestSwarmOrchestrator_Execute_ReportsUnconfirmedDeliveriesLoudly is the
+// orchestrator half of bd-ljd: a pane whose marching orders could not be
+// confirmed after one retry surfaces as a named error on the orchestration
+// result, not as a silently-successful spawn.
+func TestSwarmOrchestrator_Execute_ReportsUnconfirmedDeliveriesLoudly(t *testing.T) {
+	plan := &SwarmPlan{
+		Sessions: []SessionSpec{{Name: "cc_agents_1", AgentType: "cc", PaneCount: 1, Panes: []PaneSpec{{Index: 1, AgentType: "cc"}}}},
+	}
+	sessionRes := &OrchestrationResult{
+		Sessions: []CreateSessionResult{{SessionName: "cc_agents_1"}},
+	}
+
+	sess := &fakeSessionCreator{result: sessionRes}
+	launcher := &fakePaneLauncher{result: &BatchLaunchResult{}}
+	injector := &fakePromptInjector{result: &BatchInjectionResult{
+		TotalPanes:  1,
+		Successful:  1,
+		Unconfirmed: 1,
+		Results: []InjectionResult{{
+			SessionPane:   "cc_agents_1:1.1",
+			AgentType:     "cc",
+			Success:       true,
+			DeliveryError: "marching orders unconfirmed for pane cc_agents_1:1.1 after delivery and one retry: no orders text and no context-meter movement in capture",
+		}},
+	}}
+
+	orch := &SwarmOrchestrator{
+		SessionOrchestrator: sess,
+		PaneLauncher:        launcher,
+		PromptInjector:      injector,
+		StaggerDelay:        10 * time.Millisecond,
+	}
+
+	got, err := orch.Execute(context.Background(), plan, "march")
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	var found bool
+	for _, e := range got.Errors {
+		if strings.Contains(e.Error(), "marching orders unconfirmed after retry") && strings.Contains(e.Error(), "cc_agents_1:1.1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Execute must append a loud error naming the unconfirmed pane; errors=%v", got.Errors)
+	}
+	if got.ErrorCount != len(got.Errors) {
+		t.Fatalf("ErrorCount = %d, want %d", got.ErrorCount, len(got.Errors))
 	}
 }
 

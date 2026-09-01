@@ -125,6 +125,17 @@ type Assignment struct {
 	DispatchedAt             *time.Time           `json:"dispatched_at,omitempty"`
 	DispatchReceiptID        string               `json:"dispatch_receipt_id,omitempty"`
 	DispatchDuration         time.Duration        `json:"dispatch_duration,omitempty"`
+	// DispatchDelivered is the bd-ift post-send read-back verdict. True only
+	// when the dispatcher returned a receipt whose post-send capture check
+	// confirmed the prompt reached the pane. Replay paths consult this to
+	// reconstruct the receipt without re-running the dispatch surface.
+	DispatchDelivered        bool                 `json:"dispatch_delivered,omitempty"`
+	// DispatchDeliveryMarker is the per-attempt marker that was injected
+	// into the prompt at dispatch time and looked for in the post-send
+	// capture. Persisted on the assignment so the replay path can rebuild
+	// the receipt and operators can correlate the verdict with the bead.
+	DispatchDeliveryMarker   string               `json:"dispatch_delivery_marker,omitempty"`
+	DispatchVerificationError string              `json:"dispatch_verification_error,omitempty"`
 	LastDispatchError        string               `json:"last_dispatch_error,omitempty"`
 	ClearState               AssignmentClearState `json:"clear_state,omitempty"`
 	ClearStartedAt           *time.Time           `json:"clear_started_at,omitempty"`

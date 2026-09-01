@@ -146,6 +146,13 @@ const (
 	// ErrCodeDispatchUnknown means delivery may have occurred but no trustworthy
 	// final receipt was available, so blind retry could duplicate the prompt.
 	ErrCodeDispatchUnknown = "DISPATCH_UNKNOWN"
+
+	// ErrCodeClaimOkDeliveryFailed means the Beads claim landed, the dispatch
+	// surface reported the send accepted, but a post-send capture of the target
+	// pane never contained the delivery marker. The owner is recorded and the
+	// work is invisible to the agent — exactly the failure mode bd-ift fixes:
+	// claiming must verify, never silently succeed.
+	ErrCodeClaimOkDeliveryFailed = "CLAIM_OK_DELIVERY_FAILED"
 )
 
 // ResponseMeta provides optional metadata about response generation.
