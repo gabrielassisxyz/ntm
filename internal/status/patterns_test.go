@@ -1,6 +1,7 @@
 package status
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -424,5 +425,161 @@ func TestDetectIdleFromOutputPi(t *testing.T) {
 				t.Errorf("DetectIdleFromOutput(pi) = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// agyIdleFooterFixture is a shakedown-style capture of an Antigravity pane
+// at its prompt with a memory/model footer pushing the chevron well past the
+// parser's 5-line idle window. The fixture is reused by both the
+// DetectIdleFromOutput table and the unified-detector table below so the two
+// stay in sync — the bd-my3 fix adds a positive idle arm in both directions
+// and a regression in either is a regression in the user-visible symptom.
+const agyIdleFooterFixture = `gemini-2.5-pro /model | 396.8 MB
+
+Antigravity connected
+
+Task completed successfully.
+
+running migration scripts
+analyzing schema
+
+What would you like next?
+
+>>>
+
+Memory: 312.4 MB used / 1.2 GB total
+Model: gemini-2.5-pro (medium)
+Ready for your next command`
+
+// TestDetectIdleFromOutputAgy pins the bd-my3 positive-idle arm: a healthy
+// Antigravity pane at its `>>>` (or `>` or `agy>`) chevron must read idle
+// regardless of the scrollback underneath. The previous behavior — the line
+// scan walked the last 12 lines, never found a recognized prompt (the chevron
+// was beyond the footer in the fixture, and the parser's `>>>` shape was not
+// in the gmi pattern set at all), and answered false — caused every
+// `ntm assign --pane <agy>` to be refused as busy on a visibly-idle pane.
+func TestDetectIdleFromOutputAgy(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "triple-chevron with footer pushing it past the parser's 5-line window",
+			output: agyIdleFooterFixture,
+			want:   true,
+		},
+		{
+			name:   "single-chevron with the same footer",
+			output: strings.Replace(agyIdleFooterFixture, ">>>\n", ">\n", 1),
+			want:   true,
+		},
+		{
+			name:   "agy-branded prompt with the same footer",
+			output: strings.Replace(agyIdleFooterFixture, ">>>\n", "agy>\n", 1),
+			want:   true,
+		},
+		{
+			name:   "triple-chevron with a 30-line scrollback above it",
+			output: strings.Repeat("running tests\n", 30) + ">>>\n",
+			want:   true,
+		},
+		{
+			name:   "no prompt at all (mid-boot)",
+			output: "Starting Antigravity CLI...\nLoading workspace\nConnecting to Google AI Studio\n",
+			want:   false,
+		},
+		{
+			name:   "no prompt and scrollback full of working keywords",
+			output: "running tests\nrunning tests\nanalyzing schema\ngenerating output\nexecuting tests\n",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DetectIdleFromOutput(tt.output, "agy"); got != tt.want {
+				t.Errorf("DetectIdleFromOutput(agy) = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDetectIdleFromOutputAgyArmsChevronBeyondLineScanWindow is the
+// failure mode the agy arm specifically cures. The line scan
+// (maxIdleScanLines = 12) walks the trailing 12 non-empty lines and
+// calls IsPromptLine. A production agy pane can put its chevron past
+// that window with a memory/model footer, and the arm is the only
+// positive-idle signal that catches the case. The mutation exercise:
+// if the arm's agyTuiIdlePromptRe is removed or muted, this test
+// fails on the shakedown-shape fixture (the chevron beyond the
+// 12-line window) but the simpler fixtures below the window keep
+// passing through the line scan, so the broken arm is exactly what
+// the test exercises.
+func TestDetectIdleFromOutputAgyArmsChevronBeyondLineScanWindow(t *testing.T) {
+	// The chevron is at the top, then 18 non-empty "footer-like"
+	// lines below it (memory, model, working-output echoes, etc.).
+	// The line scan walks the trailing 12 non-empty lines and never
+	// reaches the chevron. Only the agy arm (multiline match
+	// anywhere in the output) returns true. This is the exact
+	// shape the bd-my3 fix cured.
+	lines := []string{
+		">>>",
+		"",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"running tests",
+		"Memory: 312.4 MB used / 1.2 GB total",
+		"Model: gemini-2.5-pro (medium)",
+		"Ready for your next command",
+	}
+	capture := strings.Join(lines, "\n")
+	nonEmpty := 0
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty <= 12 {
+		t.Fatalf("test fixture has only %d non-empty lines, want > 12 so the chevron is beyond the line scan's window", nonEmpty)
+	}
+	if got := DetectIdleFromOutput(capture, "agy"); !got {
+		t.Fatalf("DetectIdleFromOutput(agy, chevron-beyond-window) = false, want true — the agy arm must catch the chevron past the line scan's 12-line window (non-empty lines: %d)", nonEmpty)
+	}
+}
+
+// TestDetectIdleFromOutputAgyIsolatedFromGemini is a regression guard for
+// the shared gmi/agy pattern set. Antigravity gets a positive idle arm in
+// DetectIdleFromOutput (bd-my3); the legacy Gemini CLI must keep its
+// existing behavior so TestSessionObserverAppliesPaneLocalActivityBound
+// (which encodes bd-#234's first-observation-is-working verdict) stays
+// green. The arm is keyed on AgentTypeAntigravity specifically: the
+// production fixture's `>>>` chevron reaches the gmi line scan but the gmi
+// pattern set only knows `gemini>`, so the gmi verdict on the agy fixture
+// is "not idle" — the agy arm is the reason the same fixture classifies
+// idle when fed as `agy`. Pinned here so a future refactor that lifts the
+// arm out from under us surfaces as a test diff, not as a production
+// regression.
+func TestDetectIdleFromOutputAgyIsolatedFromGemini(t *testing.T) {
+	if got := DetectIdleFromOutput(agyIdleFooterFixture, "gmi"); got {
+		t.Errorf("DetectIdleFromOutput(gmi, agyFixture) = true, want false — gmi does not know the `>>>` chevron and the bd-my3 arm must not have leaked in")
+	}
+	if got := DetectIdleFromOutput(agyIdleFooterFixture, "agy"); !got {
+		t.Errorf("DetectIdleFromOutput(agy, agyFixture) = false, want true — the bd-my3 arm is the reason this fixture now classifies idle")
 	}
 }

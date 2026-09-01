@@ -61,6 +61,13 @@ var promptPatterns = []PromptPattern{
 
 	// Gemini CLI patterns
 	{AgentType: "gmi", Regex: regexp.MustCompile(`(?i)gemini>?\s*$`), Description: "Gemini prompt"},
+	// Antigravity CLI: same Gemini TUI shape, but with `>>>` and `agy>` in
+	// addition to the bare `>` chevron. bd-my3 — the bare `>` was missing
+	// the production TUI's triple-chevron form, so a healthy agy pane at
+	// its prompt classified as working.
+	{AgentType: "agy", Regex: regexp.MustCompile(`(?i)agy>?\s*$`), Description: "Antigravity branded prompt"},
+	{AgentType: "agy", Regex: regexp.MustCompile(`>>>\s*$`), Description: "Antigravity triple-chevron prompt"},
+	{AgentType: "agy", Regex: regexp.MustCompile(`>\s*$`), Description: "Antigravity single-chevron prompt"},
 
 	// Cursor patterns
 	{AgentType: "cursor", Regex: regexp.MustCompile(`(?i)cursor>?\s*$`), Description: "Cursor prompt"},
@@ -160,7 +167,7 @@ var knownAgentTypes = map[string]bool{
 
 // knownAgentPromptPrefixes matches prompts that belong to specific agent types.
 // When agentType is empty, the generic ">" pattern should not match these.
-var knownAgentPromptPrefixes = regexp.MustCompile(`(?i)^(claude|codex|gemini|cursor|windsurf|aider|ollama)>\s*$`)
+var knownAgentPromptPrefixes = regexp.MustCompile(`(?i)^(claude|codex|gemini|cursor|windsurf|aider|ollama|agy)>\s*$`)
 
 // ccActiveSpinnerPatterns detect Claude Code's "actively working" indicators
 // (randomized timing spinners like "Scurrying… (12s)", the extended-thinking
@@ -251,6 +258,37 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		}
 	}
 
+	// Antigravity (and the legacy Gemini CLI) get an analogous arm (bd-my3).
+	// The agent's input box is drawn identically while waiting and while
+	// working, and the agent's own parser working scan is a substring
+	// keyword hunt over the last 20 lines that fires on harmless scrollback
+	// words ("running", "analyzing", "generating", ...). Without this
+	// short-circuit the line scan below can answer false for a healthy pane
+	// at its prompt and the agent's working verdict wins, so the readiness
+	// gate refused dispatch on every idle agy pane (the assign path then
+	// reported "pane 7 is busy (state: working)" to operators; the spawn
+	// path timed out and exited the session).
+	//
+	// The "is the agent at its prompt" check is a short trailing-live-window
+	// scan for the agent's TUI prompt shape (`>>>`, `>`, `agy>`). It is
+	// intentionally narrower than the parser's working scan: only the TUI's
+	// own chevron counts, not random `>` characters in code/output above.
+	// classifyState and observationConfidence both reach the same conclusion
+	// (idle, 0.95) when this short-circuit matches, so the SafeToDispatch
+	// floor stops dropping the verdict back to 0.5.
+	//
+	// Scoped to Antigravity on purpose. Gemini keeps the bd-#234 behavior
+	// where the first observation of a `gemini>` pane is reported working
+	// until the pane-content fingerprint bound says otherwise — that test
+	// (`TestSessionObserverAppliesPaneLocalActivityBound`) is a load-bearing
+	// part of the ntm#213 follow-up and the agy case does not need to
+	// override it.
+	if agentType == string(agent.AgentTypeAntigravity) {
+		if agyTuiPromptShowing(output) {
+			return true
+		}
+	}
+
 	// Strip ANSI first for cleaner processing
 	clean := StripANSI(output)
 
@@ -285,6 +323,27 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		return true
 	}
 	return false
+}
+
+// agyTuiIdlePromptRe matches the four TUI prompt shapes the Antigravity and
+// legacy-Gemini TUIs actually render at idle: the triple-chevron `>>>`, the
+// bare `>` chevron, and the two branded prompts `agy>` and `gemini>`. The
+// leading word and chevron are the only character content we trust here: a
+// long line containing `>` is almost certainly an arrow in code or output,
+// not a prompt.
+var agyTuiIdlePromptRe = regexp.MustCompile(`(?m)^(?:>>>|>|agy>|gemini>)\s*$`)
+
+// agyTuiPromptShowing reports whether the Antigravity/Gemini TUI is rendering
+// its input-box prompt in a bounded trailing live window. bd-my3 — the
+// `DetectIdleFromOutput` line scan used to walk maxIdleScanLines trailing
+// non-empty lines and call IsPromptLine, but a real Antigravity TUI pushes
+// the prompt past that window with a memory/model footer and the parser
+// double-check (substring "running" / "analyzing" / "generating" over the
+// last 20 lines) fires on scrollback left by the previous turn. classifyState
+// then returned StateWorking and every direct assign to a healthy agy pane
+// was refused as busy.
+func agyTuiPromptShowing(output string) bool {
+	return agyTuiIdlePromptRe.MatchString(StripANSI(output))
 }
 
 // activeWorkBelow reports whether any line after promptIdx (already-stripped

@@ -162,6 +162,40 @@ type RecoverySpawnStatus struct {
 	Warnings  []string `json:"warnings"`
 }
 
+// SpawnPromptDeliveryStatus reports per-pane prompt-delivery outcomes from
+// the spawn phase. The readiness gate is not a single all-or-nothing verdict:
+// one pane can sit at confidence=0.50 (below the 0.75 floor) while every
+// other pane in the same session is green, and the spawn must keep the
+// session usable. bd-my3 — the brief requires the spawn to fail ONLY the
+// ambiguous pane and exit 0 (partial success) when the session is left
+// usable, instead of failing the whole spawn on the first readiness
+// timeout.
+type SpawnPromptDeliveryStatus struct {
+	// Total is the number of agent panes that needed prompt delivery.
+	Total int `json:"total"`
+	// Delivered is the number of panes whose readiness gate cleared and
+	// whose prompt went out.
+	Delivered int `json:"delivered"`
+	// Failed is the number of panes whose readiness gate timed out or
+	// whose dispatch failed. Each failed pane appears in PaneErrors with
+	// the readiness signal or dispatch error that blocked it.
+	Failed int `json:"failed"`
+	// PaneErrors is the per-pane failure list, keyed by pane_id. Each entry
+	// names the failing signal with its observed value and the threshold it
+	// missed, so the operator can decide whether to retry that specific
+	// pane (and how) instead of re-spawning the session.
+	PaneErrors []SpawnPromptDeliveryError `json:"pane_errors,omitempty"`
+}
+
+// SpawnPromptDeliveryError is one pane's prompt-delivery failure. The message
+// is the readiness timeout error or the dispatch error verbatim, with the
+// failing signal (state / freshness / confidence / dispatch message) named
+// inline so the operator does not have to re-poll the pane to find out why.
+type SpawnPromptDeliveryError struct {
+	PaneID  string `json:"pane_id"`
+	Message string `json:"message"`
+}
+
 // SpawnResponse is the output format for spawn command (with agents)
 type SpawnResponse struct {
 	TimestampedResponse
@@ -173,6 +207,14 @@ type SpawnResponse struct {
 	Stagger          *StaggerConfig        `json:"stagger,omitempty"`
 	AgentMail        *AgentMailSpawnStatus `json:"agent_mail,omitempty"`
 	Recovery         *RecoverySpawnStatus  `json:"recovery,omitempty"`
+	// PromptDelivery is the per-pane readiness-gate outcome. The spawn's
+	// readiness wait is not a single all-or-nothing verdict, and an
+	// ambiguous pane (one readiness signal below threshold while every
+	// other pane is green) must not fail the whole spawn — the session
+	// is left usable and the operator can retry the failing pane. The
+	// field is set whenever the spawn attempted per-pane prompt delivery
+	// (i.e. when at least one agent pane was launched). bd-my3.
+	PromptDelivery *SpawnPromptDeliveryStatus `json:"prompt_delivery,omitempty"`
 	// CoordinatorIdentity reports whether the session's coordinator identity
 	// (agent.json) was created. A spawn that produced no coordinator identity
 	// must not report unqualified success, because `ntm lock`/`ntm unlock`

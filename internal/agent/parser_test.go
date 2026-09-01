@@ -955,6 +955,88 @@ func TestParser_FileData_Gemini_RateLimit(t *testing.T) {
 	}
 }
 
+// TestParser_FileData_Antigravity_IdlePinsChevronPrompts pins bd-my3: the
+// parser's gmi idle pattern set now knows the four TUI prompt shapes the
+// Antigravity TUI actually draws at idle — `>>>`, `>`, `agy>`, and the
+// shared `gemini>`. Before this bead, the agent parser was the second
+// classifier whose 5-line idle window missed the `>>>` chevron in the
+// production fixture, so the bd-q2a readiness gate's parser double-check
+// would have called the pane working on a healthy idle one.
+//
+// The test uses a compact capture where the prompt is INSIDE the parser's
+// 5-line idle window on purpose. The status-level fix (DetectIdleFromOutput
+// + determineStateAt) widens the window via the agyTuiPromptShowing arm and
+// is what catches the production-shape fixture; this test pins the parser
+// surface so the new `>>>` and `agy>` patterns cannot silently be removed
+// from gmiIdlePatterns in a future refactor.
+func TestParser_FileData_Antigravity_IdlePinsChevronPrompts(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		wantIdle bool
+	}{
+		{
+			name:     "triple-chevron prompt in the parser's 5-line window",
+			output:   "last transcript line\n\nWhat would you like?\n\n>>>\n",
+			wantIdle: true,
+		},
+		{
+			name:     "single-chevron prompt in the parser's 5-line window",
+			output:   "last transcript line\n\nWhat would you like?\n\n>\n",
+			wantIdle: true,
+		},
+		{
+			name:     "agy-branded prompt in the parser's 5-line window",
+			output:   "last transcript line\n\nWhat would you like?\n\nagy>\n",
+			wantIdle: true,
+		},
+	}
+
+	p := NewParser()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, err := p.ParseWithHint(tt.output, AgentTypeAntigravity)
+			if err != nil {
+				t.Fatalf("ParseWithHint: %v", err)
+			}
+			if state.Type != AgentTypeAntigravity {
+				t.Errorf("Type = %v, want %v", state.Type, AgentTypeAntigravity)
+			}
+			if tt.wantIdle && !state.IsIdle {
+				t.Errorf("IsIdle = false, want true — the gmi idle pattern set must know the chevron shape inside its 5-line window")
+			}
+			if state.IsWorking {
+				t.Errorf("IsWorking = true, want false — IsIdle beats IsWorking in detectStateFlags, so this is a state-flag wiring bug, not a pattern bug")
+			}
+		})
+	}
+}
+
+// TestParser_FileData_Antigravity_IdleFixture pins the parser on the
+// shakedown capture (internal/agent/testdata/agy_idle.txt). The
+// fixture has the `>>>` chevron inside the parser's 5-line idle
+// window and the `>>>` is one of the gmi idle pattern shapes the
+// bd-my3 fix added. The test exercises the actual fixture file so
+// a future refactor that lifts `>>>` from gmiIdlePatterns surfaces
+// here, not in a separate hand-built case.
+func TestParser_FileData_Antigravity_IdleFixture(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "agy_idle.txt")
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if state.Type != AgentTypeAntigravity {
+		t.Errorf("Type = %v, want %v (agy_idle.txt has the Antigravity header signature)", state.Type, AgentTypeAntigravity)
+	}
+	if !state.IsIdle {
+		t.Errorf("IsIdle = false, want true — the gmi idle pattern set must know the `>>>` shape for an Antigravity pane at its prompt")
+	}
+	if state.IsWorking {
+		t.Errorf("IsWorking = true, want false — IsIdle beats IsWorking in detectStateFlags, so this is a state-flag wiring bug, not a pattern bug")
+	}
+}
+
 // TestParser_FileData_AllFiles verifies all testdata files can be parsed without error.
 func TestParser_FileData_AllFiles(t *testing.T) {
 	files := []string{
@@ -969,6 +1051,7 @@ func TestParser_FileData_AllFiles(t *testing.T) {
 		"gmi_idle.txt",
 		"gmi_yolo.txt",
 		"gmi_ratelimit.txt",
+		"agy_idle.txt",
 	}
 
 	p := NewParser()
