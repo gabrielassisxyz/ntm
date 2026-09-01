@@ -2099,6 +2099,49 @@ func newTestAttentionStore(t *testing.T) *state.Store {
 	return store
 }
 
+func TestBuildEventsOutputExposesResilienceMonitorDetection(t *testing.T) {
+	store := newTestAttentionStore(t)
+	if _, err := store.AppendAttentionEvent(&state.StoredAttentionEvent{
+		Ts:            time.Now().UTC(),
+		SessionName:   "observed-session",
+		Pane:          "2",
+		Category:      "alert",
+		EventType:     "alert_warning",
+		Source:        "resilience.monitor",
+		Actionability: state.ActionabilityActionRequired,
+		Severity:      state.SeverityWarning,
+		ReasonCode:    "crash_handling_suppressed",
+		Summary:       "crash handling suppressed by pid_alive guard",
+		Details:       `{"guard":"pid_alive"}`,
+	}); err != nil {
+		t.Fatalf("AppendAttentionEvent: %v", err)
+	}
+
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       10,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	}, WithAttentionStore(store))
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		SetAttentionFeed(oldFeed)
+		feed.Stop()
+	})
+
+	output, status := BuildEventsOutput(EventsOptions{Session: "observed-session", Limit: 10})
+	if status != 200 || !output.Success {
+		t.Fatalf("BuildEventsOutput() = status %d output %+v, want successful robot response", status, output)
+	}
+	if len(output.Events) != 1 {
+		t.Fatalf("robot events = %+v, want one resilience monitor detection", output.Events)
+	}
+	event := output.Events[0]
+	if event.Source != "resilience.monitor" || event.ReasonCode != "crash_handling_suppressed" || event.Session != "observed-session" {
+		t.Errorf("robot event = %+v, want the persisted resilience monitor detection", event)
+	}
+}
+
 func TestPersistNormalizedProjection_ReplacesRows(t *testing.T) {
 	store := newTestAttentionStore(t)
 	firstCollectedAt := time.Now().UTC()
