@@ -1241,11 +1241,16 @@ type AssignmentItem struct {
 	AgentName       string                            `json:"agent_name"`
 	Status          string                            `json:"status"`      // assigned|working|completed|failed
 	PromptSent      bool                              `json:"prompt_sent"` // Whether prompt was sent
-	AssignedAt      string                            `json:"assigned_at"` // ISO8601 timestamp
-	Score           float64                           `json:"score,omitempty"`
-	Reasoning       string                            `json:"reasoning,omitempty"`
-	ReasonCodes     []string                          `json:"reason_codes,omitempty"`
-	ScoreComponents *assign.AllocationScoreComponents `json:"score_components,omitempty"`
+	// Delivered is the bd-ift post-send read-back verdict. Same semantics as
+	// DirectAssignItem.Delivered: true only when a fresh capture of the
+	// pane contained the per-assignment marker after dispatch.
+	Delivered        bool                              `json:"delivered"`
+	DeliveryError    string                            `json:"delivery_error,omitempty"`
+	AssignedAt       string                            `json:"assigned_at"` // ISO8601 timestamp
+	Score            float64                           `json:"score,omitempty"`
+	Reasoning        string                            `json:"reasoning,omitempty"`
+	ReasonCodes      []string                          `json:"reason_codes,omitempty"`
+	ScoreComponents  *assign.AllocationScoreComponents `json:"score_components,omitempty"`
 }
 
 // AssignAllocationView is a compact JSON summary of the pressure-aware
@@ -1272,6 +1277,8 @@ type AssignSummaryEnhanced struct {
 	ActionableCount   int `json:"actionable_count"` // Beads with no blockers
 	BlockedCount      int `json:"blocked_count"`    // Beads blocked by dependencies
 	AssignedCount     int `json:"assigned_count"`
+	DeliveredCount    int `json:"delivered_count"`     // Beads whose prompt was confirmed in the pane (bd-ift)
+	DeliveryFailedCount int `json:"delivery_failed_count"` // Beads whose prompt was sent but not confirmed
 	SkippedCount      int `json:"skipped_count"`
 	IdleAgents        int `json:"idle_agent_count"`
 	CycleWarningCount int `json:"cycle_warning_count,omitempty"` // Beads in dependency cycles
@@ -1307,6 +1314,13 @@ type DirectAssignItem struct {
 	Status       string   `json:"status"`
 	Prompt       string   `json:"prompt"`
 	PromptSent   bool     `json:"prompt_sent"`
+	// Delivered is the bd-ift post-send read-back verdict: true only when a
+	// fresh capture of the pane after dispatch contained the per-assignment
+	// marker. PromptSent=true with Delivered=false means the dispatch surface
+	// accepted the send but the prompt never reached the agent — the
+	// "owned and inert" failure mode bd-ift was opened to fix.
+	Delivered    bool     `json:"delivered"`
+	DeliveryError string  `json:"delivery_error,omitempty"`
 	AssignedAt   string   `json:"assigned_at"`
 	PaneWasBusy  bool     `json:"pane_was_busy,omitempty"`
 	DepsIgnored  bool     `json:"deps_ignored,omitempty"`
@@ -3119,7 +3133,24 @@ func executeAssignmentsEnhanced(ctx context.Context, session string, out *Assign
 			return fmt.Errorf("assignment execution canceled while assigning %s: %w", item.BeadID, err)
 		}
 		if assignErr != nil {
-			out.Errors = append(out.Errors, fmt.Sprintf("%s: atomic assignment: %v", item.BeadID, assignErr))
+			// bd-ift: classify delivery failures distinctly from other
+			// atomic failures. The dispatch port returns an error when the
+			// post-send capture check could not find the injected marker;
+			// that error is wrapped by the coordinator with
+			// ErrDispatchOutcomeUnknown, but the underlying verdict lives
+			// on the receipt: Delivered=false with a non-empty DeliveryMarker
+			// means "transport accepted, prompt never reached the pane".
+			deliveryMissing := atomicResult.Dispatch.DeliveryMarker != "" && !atomicResult.Dispatch.Delivered
+			if deliveryMissing {
+				item.Delivered = false
+				item.DeliveryError = strings.TrimSpace(atomicResult.Dispatch.VerificationError)
+				if item.DeliveryError == "" {
+					item.DeliveryError = assignDeliveryMissingError(atomicResult.Dispatch.DeliveryMarker, "").Error()
+				}
+				out.Errors = append(out.Errors, fmt.Sprintf("%s: %s: %s", item.BeadID, robot.ErrCodeClaimOkDeliveryFailed, item.DeliveryError))
+			} else {
+				out.Errors = append(out.Errors, fmt.Sprintf("%s: atomic assignment: %v", item.BeadID, assignErr))
+			}
 			if !opts.Quiet {
 				fmt.Printf("  Failed to assign %s to pane %s: %v\n", item.BeadID, item.PaneTarget, assignErr)
 				if durable := atomicResult.Assignment; durable != nil && durable.BeadID == item.BeadID && durable.IdempotencyKey == idempotencyKey {
@@ -3148,6 +3179,40 @@ func executeAssignmentsEnhanced(ctx context.Context, session string, out *Assign
 		// FIX (d): only NOW is the prompt actually sent — persist the flag into
 		// the caller's slice so dispatch logs/counts reflect SENT, not PLANNED.
 		item.PromptSent = atomicResult.Sent
+		// bd-ift: surface the per-pane delivery verdict on the item and
+		// bucket it into the summary so callers can distinguish "send-keys
+		// returned success" from "prompt text actually reached the pane".
+		item.Delivered = atomicResult.Dispatch.Delivered
+		// bd-ift: defensive path for the case where the dispatch surface
+		// returned without error but the receipt's verdict still reports
+		// delivery unconfirmed. With today's cliAtomicPaneDispatchPort the
+		// post-send capture check always returns an error when the marker
+		// is missing, so this branch is currently unreachable; keeping it
+		// defends against future dispatch ports that might surface a soft
+		// verdict through the receipt without an error return.
+		if atomicResult.Dispatch.DeliveryMarker != "" && !atomicResult.Dispatch.Delivered {
+			item.DeliveryError = strings.TrimSpace(atomicResult.Dispatch.VerificationError)
+			if item.DeliveryError == "" {
+				item.DeliveryError = assignDeliveryMissingError(atomicResult.Dispatch.DeliveryMarker, "").Error()
+			}
+			// bd-ift: a Sent=true / Delivered=false outcome counts as a
+			// failure even though the dispatch surface returned no error.
+			// The durable assignment was created; the work is invisible to
+			// the agent; the operator needs to know.
+			out.Summary.DeliveryFailedCount++
+			out.Errors = append(out.Errors, fmt.Sprintf("%s: %s: %s", item.BeadID, robot.ErrCodeClaimOkDeliveryFailed, item.DeliveryError))
+			if !opts.Quiet {
+				fmt.Printf("  ✗ Assigned %s to pane %s (%s) — claim landed, but delivery unconfirmed\n", item.BeadID, item.PaneTarget, item.AgentType)
+				if strings.TrimSpace(item.DeliveryError) != "" {
+					fmt.Printf("    Reason: %s\n", item.DeliveryError)
+				}
+			}
+			failCount++
+			continue
+		}
+		if atomicResult.Dispatch.Delivered {
+			out.Summary.DeliveredCount++
+		}
 		activeBeads[item.BeadID] = struct{}{}
 		successCount++
 		out.Summary.AssignedCount = successCount
@@ -3166,9 +3231,18 @@ func executeAssignmentsEnhanced(ctx context.Context, session string, out *Assign
 	if !opts.Quiet {
 		fmt.Println()
 		if failCount == 0 {
-			fmt.Printf("✓ Successfully assigned %d beads\n", successCount)
+			fmt.Printf("✓ Successfully assigned %d beads", successCount)
+			if out.Summary.DeliveryFailedCount > 0 {
+				fmt.Printf(" (%d delivered, %d delivery unconfirmed)\n", out.Summary.DeliveredCount, out.Summary.DeliveryFailedCount)
+			} else {
+				fmt.Println()
+			}
 		} else {
-			fmt.Printf("Assigned %d beads (%d failed)\n", successCount, failCount)
+			fmt.Printf("Assigned %d beads (%d failed", successCount, failCount)
+			if out.Summary.DeliveryFailedCount > 0 {
+				fmt.Printf(", %d delivery unconfirmed", out.Summary.DeliveryFailedCount)
+			}
+			fmt.Println(")")
 		}
 		if reservedCount > 0 {
 			fmt.Printf("  File reservations: %d beads with reserved paths\n", reservedCount)
@@ -3213,11 +3287,18 @@ func newCLIAtomicAssignmentCoordinator(store *assignment.AssignmentStore, projec
 		redactionConfig = cfg.Redaction.ToRedactionLibConfig()
 	}
 	bypassIdleGate := len(allowBusy) > 0 && allowBusy[0]
+	// bd-ift: delivery verification is enabled by default. --force bypasses
+	// the idle gate (the operator is saying "I know it's busy"), but
+	// delivery verification still runs because the failure mode is exactly
+	// the one bd-ift fixes: keystrokes dropped silently on a modal-wedged
+	// pane. Callers that genuinely want to skip verification can use
+	// --skip-delivery-verify, defined at the CLI layer.
 	dispatchPort := &cliAtomicPaneDispatchPort{
 		session:         store.SessionName,
 		redactionConfig: redactionConfig,
 		observer:        newAssignSessionObserver(),
 		bypassIdleGate:  bypassIdleGate,
+		verifyDelivery:  assignDeliveryVerificationEnabled(),
 	}
 	readLiveDetails := func(detailsCtx context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
 		details, err := getBeadAssignmentDetailsForAssignment(detailsCtx, projectDir, beadID)
@@ -3402,6 +3483,15 @@ type cliAtomicPaneDispatchPort struct {
 	redactionConfig redaction.Config
 	observer        assignSessionObserver
 	bypassIdleGate  bool
+	// verifyDelivery enables the bd-ift post-send capture check. When true,
+	// the dispatch port injects a delivery marker into the prompt and, after
+	// the dispatch surface reports ReceiptDelivered, captures the pane to
+	// confirm the marker landed. The receipt's Delivered field carries the
+	// verdict to the call site.
+	verifyDelivery bool
+	// deliveryVerifier is the read-back implementation. nil falls back to
+	// tmuxDeliveryVerifier so production callers can omit it.
+	deliveryVerifier deliveryVerifier
 }
 
 func (p *cliAtomicPaneDispatchPort) prepare(ctx context.Context, req assignment.DispatchRequest) (*dispatchsvc.Service, *dispatchsvc.Prepared, error) {
@@ -3477,12 +3567,26 @@ func (p *cliAtomicPaneDispatchPort) Dispatch(ctx context.Context, req assignment
 			)
 		}
 	}
-	service, prepared, prepareErr := p.prepare(ctx, req)
+
+	// bd-ift: assign verifies prompt delivery, not only the claim. Inject a
+	// per-attempt marker into the prompt so the post-send capture can confirm
+	// our specific message reached the pane. We do this before prepare so the
+	// dispatch surface sees the same payload the agent will see, and the
+	// redaction port runs against the marker-bearing text (the marker is a
+	// bracketed hex string, not a credential finding).
+	marker := ""
+	dispatchReq := req
+	if p.verifyDelivery {
+		marker = newAssignDeliveryMarker(req.IdempotencyKey)
+		dispatchReq.Prompt = injectAssignDeliveryMarker(req.Prompt, marker)
+	}
+
+	service, prepared, prepareErr := p.prepare(ctx, dispatchReq)
 	if prepareErr != nil {
 		return assignment.DispatchReceipt{Duration: time.Since(started)}, assignment.GuaranteeNoActuation(prepareErr)
 	}
 	result, dispatchErr := service.Dispatch(ctx, prepared)
-	receipt := assignment.DispatchReceipt{Duration: time.Since(started)}
+	receipt := assignment.DispatchReceipt{Duration: time.Since(started), DeliveryMarker: marker}
 	if dispatchErr != nil {
 		return receipt, dispatchErr
 	}
@@ -3491,7 +3595,55 @@ func (p *cliAtomicPaneDispatchPort) Dispatch(ctx context.Context, req assignment
 		return receipt, err
 	}
 	receipt.DeliveryID = assignment.DispatchDeliveryID(delivery.Target.Ref.StableKey(), string(delivery.Protocol), req.IdempotencyKey)
+
+	// bd-ift: post-send capture check. A ReceiptDelivered means send-keys
+	// returned success; the marker check proves the prompt text actually
+	// reached the pane. We only run verification when one was injected and
+	// the dispatch gate did not deliberately bypass verification
+	// (bypassIdleGate covers --force, which already opts the user out of the
+	// "pane is busy" check; opting them out of delivery verification too
+	// would defeat the bd-ift fix).
+	if !p.verifyDelivery {
+		return receipt, nil
+	}
+	pane, paneLookupErr := lookupAssignPaneForVerification(ctx, p.session, req.Target)
+	if paneLookupErr != nil {
+		receipt.VerificationError = fmt.Sprintf("pane lookup for delivery verification: %v", paneLookupErr)
+		return receipt, assignDeliveryMissingError(marker, "")
+	}
+	verified, captured, verifyErr := verifyAssignDelivery(ctx, p.deliveryVerifier, pane, marker)
+	if verifyErr != nil {
+		// Capture infrastructure failure (tmux crashed, context canceled,
+		// etc.). The prompt may still have landed; we surface it as an
+		// unconfirmed verdict so an operator can investigate rather than
+		// treating it as a silent success.
+		receipt.VerificationError = verifyErr.Error()
+		return receipt, verifyErr
+	}
+	if !verified {
+		receipt.VerificationError = assignDeliveryMissingError(marker, captured).Error()
+		return receipt, assignDeliveryMissingError(marker, captured)
+	}
+	receipt.Delivered = true
 	return receipt, nil
+}
+
+// lookupAssignPaneForVerification finds the live tmux pane for a verification
+// read-back. We need the pane's ID and current title/width, not the
+// selector, because capture-pane runs against the physical pane identity.
+func lookupAssignPaneForVerification(ctx context.Context, session, target string) (tmux.Pane, error) {
+	if ctx == nil {
+		return tmux.Pane{}, errors.New("delivery verification context is required")
+	}
+	panes, err := tmux.GetPanesContext(ctx, session)
+	if err != nil {
+		return tmux.Pane{}, fmt.Errorf("load pane topology: %w", err)
+	}
+	resolved, err := tmux.ResolvePaneSelectors(panes, []string{target}, true)
+	if err != nil {
+		return tmux.Pane{}, fmt.Errorf("resolve pane for delivery verification: %w", err)
+	}
+	return resolved[0], nil
 }
 
 func validateSinglePaneDispatchResult(result dispatchsvc.Result, requestedTarget string) (dispatchsvc.Receipt, error) {
@@ -3653,6 +3805,11 @@ type ReassignData struct {
 	AgentName                    string `json:"agent_name,omitempty"`
 	Status                       string `json:"status"`
 	PromptSent                   bool   `json:"prompt_sent"`
+	// Delivered is the bd-ift post-send verdict for the reassignment. False
+	// when the dispatch surface reported sent but the capture check could
+	// not confirm the marker landed in the target pane.
+	Delivered                    bool   `json:"delivered"`
+	DeliveryError                string `json:"delivery_error,omitempty"`
 	AssignedAt                   string `json:"assigned_at"`
 	PreviousPane                 int    `json:"previous_pane"`
 	PreviousAgent                string `json:"previous_agent,omitempty"`
@@ -3691,6 +3848,9 @@ type RetryItem struct {
 	AgentName          string `json:"agent_name,omitempty"`
 	Status             string `json:"status"`
 	PromptSent         bool   `json:"prompt_sent"`
+	// Delivered is the bd-ift post-send verdict for the retry attempt.
+	Delivered          bool   `json:"delivered"`
+	DeliveryError      string `json:"delivery_error,omitempty"`
 	AssignedAt         string `json:"assigned_at"`
 	PreviousPane       int    `json:"previous_pane"`
 	PreviousAgent      string `json:"previous_agent,omitempty"`
@@ -4085,10 +4245,21 @@ func runRetryAssignments(ctx context.Context, session string) error {
 			return emitRetryFailure(session, robot.ErrCodeTimeout, fmt.Errorf("assignment retry canceled while assigning %s: %w", failed.BeadID, err))
 		}
 		if assignErr != nil {
-			skippedItems = append(skippedItems, RetrySkippedItem{
-				BeadID: failed.BeadID,
-				Reason: assignErr.Error(),
-			})
+			// bd-ift: a retry that landed the claim but failed the
+			// post-send capture check is the same owned-and-inert failure
+			// mode; surface it distinctly so the operator can tell whether
+			// to retry again or investigate the pane.
+			if atomicResult.Dispatch.DeliveryMarker != "" && !atomicResult.Dispatch.Delivered {
+				skippedItems = append(skippedItems, RetrySkippedItem{
+					BeadID: failed.BeadID,
+					Reason: fmt.Sprintf("%s: %s", robot.ErrCodeClaimOkDeliveryFailed, assignDeliveryMissingError(atomicResult.Dispatch.DeliveryMarker, "").Error()),
+				})
+			} else {
+				skippedItems = append(skippedItems, RetrySkippedItem{
+					BeadID: failed.BeadID,
+					Reason: assignErr.Error(),
+				})
+			}
 			continue
 		}
 		promptSent := atomicResult.Sent
@@ -4102,7 +4273,7 @@ func runRetryAssignments(ctx context.Context, session string) error {
 		}
 
 		now := time.Now().UTC()
-		retriedItems = append(retriedItems, RetryItem{
+		retriedItem := RetryItem{
 			BeadID:             failed.BeadID,
 			BeadTitle:          forcedRedactedAssignmentText(beadTitle),
 			Pane:               targetPane.Index,
@@ -4110,12 +4281,20 @@ func runRetryAssignments(ctx context.Context, session string) error {
 			AgentName:          newAgentName,
 			Status:             string(assignment.StatusAssigned),
 			PromptSent:         promptSent,
+			Delivered:          atomicResult.Dispatch.Delivered,
 			AssignedAt:         now.Format(time.RFC3339),
 			PreviousPane:       failed.Pane,
 			PreviousAgent:      failed.AgentName,
 			PreviousFailReason: failed.FailReason,
 			RetryCount:         failed.RetryCount + 1,
-		})
+		}
+		if atomicResult.Dispatch.DeliveryMarker != "" && !atomicResult.Dispatch.Delivered {
+			retriedItem.DeliveryError = strings.TrimSpace(atomicResult.Dispatch.VerificationError)
+			if retriedItem.DeliveryError == "" {
+				retriedItem.DeliveryError = assignDeliveryMissingError(atomicResult.Dispatch.DeliveryMarker, "").Error()
+			}
+		}
+		retriedItems = append(retriedItems, retriedItem)
 	}
 
 	// Save any changes
@@ -5037,6 +5216,7 @@ func runReassignment(ctx context.Context, session string) error {
 		AgentName:                    durable.AgentName,
 		Status:                       string(durable.Status),
 		PromptSent:                   atomicResult.Sent,
+		Delivered:                    atomicResult.Dispatch.Delivered,
 		AssignedAt:                   durable.AssignedAt.UTC().Format(time.RFC3339),
 		PreviousPane:                 currentAssignment.Pane,
 		PreviousAgent:                currentAssignment.AgentName,
@@ -5046,6 +5226,12 @@ func runReassignment(ctx context.Context, session string) error {
 		FileReservationsReleasedFrom: releasedReservationCount,
 		FileReservationsCreatedFor:   len(atomicResult.Lease.Granted),
 	}
+	if atomicResult.Dispatch.DeliveryMarker != "" && !atomicResult.Dispatch.Delivered {
+		data.DeliveryError = strings.TrimSpace(atomicResult.Dispatch.VerificationError)
+		if data.DeliveryError == "" {
+			data.DeliveryError = assignDeliveryMissingError(atomicResult.Dispatch.DeliveryMarker, "").Error()
+		}
+	}
 	if IsJSONOutput() {
 		return json.NewEncoder(os.Stdout).Encode(ReassignEnvelope{
 			Command: "assign", Subcommand: "reassign", Session: session,
@@ -5053,7 +5239,14 @@ func runReassignment(ctx context.Context, session string) error {
 		})
 	}
 	if !assignQuiet {
-		fmt.Printf("Reassigned %s to pane %s (%s)\n", beadID, assignmentPaneTarget(*targetPane), targetAgentType)
+		if data.Delivered {
+			fmt.Printf("Reassigned %s to pane %s (%s)\n", beadID, assignmentPaneTarget(*targetPane), targetAgentType)
+		} else {
+			fmt.Printf("Reassigned %s to pane %s (%s) — claim landed, but delivery unconfirmed\n", beadID, assignmentPaneTarget(*targetPane), targetAgentType)
+			if strings.TrimSpace(data.DeliveryError) != "" {
+				fmt.Printf("  Reason: %s\n", data.DeliveryError)
+			}
+		}
 		fmt.Printf("  Previous: pane %d (%s)\n", currentAssignment.Pane, currentAssignment.AgentType)
 		displayPrompt := durable.PromptSent
 		if displayPrompt == "" {
@@ -5808,8 +6001,17 @@ type DispatchReservation struct {
 type DispatchTransportStatus struct {
 	Sent       bool   `json:"sent"`
 	DeliveryID string `json:"delivery_id,omitempty"`
-	Error      string `json:"error,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
+	// Delivered is the bd-ift post-send read-back verdict. When Sent is
+	// true, Delivered may still be false: the dispatch surface accepted the
+	// send, but a fresh capture of the pane never contained the
+	// per-assignment marker (bd-ift failure mode). The two are reported
+	// separately so callers can distinguish "send-keys returned success"
+	// from "prompt text reached the agent".
+	Delivered        bool   `json:"delivered,omitempty"`
+	DeliveryMarker   string `json:"delivery_marker,omitempty"`
+	DeliveryError    string `json:"delivery_error,omitempty"`
+	Error            string `json:"error,omitempty"`
+	DurationMs       int64  `json:"duration_ms"`
 }
 
 // makeDirectAssignEnvelope creates a standard assign envelope for direct pane assignment JSON output.
@@ -6243,10 +6445,39 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 		receipt = buildDispatchReceipt(
 			opts.Session, beadID, targetPane, assignItem.PaneTarget, durablePrompt, opts.Template, fileReservations,
 			atomicResult.Dispatch.DeliveryID, atomicResult.Sent, assignErr, atomicResult.Dispatch.Duration.Milliseconds(), atomicResult.Assignment.DispatchedAt, false,
+			atomicResult.Dispatch.Delivered, atomicResult.Dispatch.DeliveryMarker, atomicResult.Dispatch.VerificationError,
 		)
 	}
+	// bd-ift: the dispatched-prompt verdict from the post-send capture check.
+	// We populate it on the item whenever we have a dispatch receipt, so
+	// callers can distinguish "the send-keys call returned success" from "the
+	// prompt text actually reached the pane". The error-mapping block below
+	// promotes the failure to a structured error code.
+	assignItem.Delivered = atomicResult.Dispatch.Delivered
+	if atomicResult.Dispatch.DeliveryMarker != "" && !atomicResult.Dispatch.Delivered {
+		assignItem.DeliveryError = strings.TrimSpace(atomicResult.Dispatch.VerificationError)
+		if assignItem.DeliveryError == "" {
+			assignItem.DeliveryError = assignDeliveryMissingError(atomicResult.Dispatch.DeliveryMarker, "").Error()
+		}
+	}
+	// bd-ift: when the dispatch surface reported sent but the post-send
+	// capture did not contain our marker, the durable error wraps the
+	// generic assignDeliveryMissingError. Match it by string so we do not
+	// need to add a sentinel to the assignment package just for this
+	// classification (the message is stable and operator-readable).
 	if assignErr != nil {
 		code := "ASSIGN_ERROR"
+		// bd-ift: when a marker was injected (DeliveryMarker != "") and the
+		// post-send capture did not see it, the specific failure is
+		// CLAIM_OK_DELIVERY_FAILED — the dispatch transport reported a
+		// successful send but the prompt text never reached the pane. This
+		// check must run BEFORE the ErrDispatchOutcomeUnknown branch because
+		// the coordinator wraps the dispatch error with that sentinel and
+		// the generic DISPATCH_UNKNOWN code would otherwise swallow the
+		// bd-ift verdict. We do not use errors.Is for the marker failure
+		// because the marker is the stable correlation key, not a sentinel.
+		deliveryMarkerPresent := atomicResult.Dispatch.DeliveryMarker != ""
+		deliveryMissing := deliveryMarkerPresent && !atomicResult.Dispatch.Delivered
 		switch {
 		case errors.Is(assignErr, context.Canceled), errors.Is(assignErr, context.DeadlineExceeded):
 			code = robot.ErrCodeTimeout
@@ -6260,6 +6491,13 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 			code = "TARGET_BUSY"
 		case errors.Is(assignErr, assignment.ErrTerminalAssignmentAttempt):
 			code = "BEAD_NOT_REOPENED"
+		case deliveryMissing:
+			// bd-ift: the dispatch transport succeeded, but the post-send
+			// capture check could not confirm the prompt reached the pane.
+			// Surface this specific owned-and-inert failure mode ahead of
+			// the generic DISPATCH_UNKNOWN branch the coordinator's wrap
+			// would otherwise pick.
+			code = robot.ErrCodeClaimOkDeliveryFailed
 		case errors.Is(assignErr, assignment.ErrDispatchOutcomeUnknown):
 			code = "DISPATCH_UNKNOWN"
 		case durableAssignment != nil && durableAssignment.DispatchAttempts > 0:
@@ -6296,7 +6534,22 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 
 	// Text output
 	if !opts.Quiet {
-		fmt.Printf("✓ Assigned %s to pane %s (%s)\n", beadID, assignItem.PaneTarget, agentType)
+		if assignItem.PromptSent && assignItem.Delivered {
+			fmt.Printf("✓ Assigned %s to pane %s (%s)\n", beadID, assignItem.PaneTarget, agentType)
+		} else if assignItem.PromptSent {
+			// bd-ift: a verdict of Delivered=false with PromptSent=true is
+			// the specific failure this bead fixes — the send surface
+			// reported success, but the capture check could not confirm the
+			// marker. The operator has to know the claim landed but the
+			// prompt did not.
+			fmt.Printf("✗ Assigned %s to pane %s (%s) — claim landed, but delivery unconfirmed\n", beadID, assignItem.PaneTarget, agentType)
+			if strings.TrimSpace(assignItem.DeliveryError) != "" {
+				fmt.Printf("  Reason: %s\n", assignItem.DeliveryError)
+			}
+			fmt.Printf("  Recovery: investigate the pane (%s), then run `ntm assign %s --clear %s` and retry.\n", assignItem.PaneTarget, opts.Session, beadID)
+		} else {
+			fmt.Printf("✓ Assigned %s to pane %s (%s)\n", beadID, assignItem.PaneTarget, agentType)
+		}
 		if assignItem.BeadTitle != "" {
 			fmt.Printf("  Title: %s\n", assignItem.BeadTitle)
 		}
@@ -7635,6 +7888,9 @@ func buildDispatchReceipt(
 	durationMs int64,
 	dispatchedAt *time.Time,
 	dryRun bool,
+	delivered bool,
+	deliveryMarker string,
+	deliveryError string,
 ) *DispatchReceipt {
 	timestamp := time.Now().UTC()
 	if dispatchedAt != nil {
@@ -7656,9 +7912,12 @@ func buildDispatchReceipt(
 			Source:     templateSource,
 		},
 		Transport: DispatchTransportStatus{
-			Sent:       sent && transportErr == nil && !dryRun,
-			DeliveryID: deliveryID,
-			DurationMs: durationMs,
+			Sent:           sent && transportErr == nil && !dryRun,
+			DeliveryID:     deliveryID,
+			DurationMs:     durationMs,
+			Delivered:      delivered,
+			DeliveryMarker: deliveryMarker,
+			DeliveryError:  deliveryError,
 		},
 		Timestamp: timestamp.Format(time.RFC3339Nano),
 		DryRun:    dryRun,
