@@ -15,7 +15,7 @@ func TestRelaunchRegistrationInputs(t *testing.T) {
 	got := relaunchRegistrationInputs([]robot.RestartedAgentPane{
 		{PaneIndex: 1, PaneID: "%3", PaneTitle: "demo__cc_1", AgentType: "cc", Variant: "sonnet"},
 		{PaneIndex: 2, PaneID: "%4", PaneTitle: "demo__cod_1", AgentType: "cod"},
-	})
+	}, "demo")
 	if len(got) != 2 {
 		t.Fatalf("inputs = %d, want 2", len(got))
 	}
