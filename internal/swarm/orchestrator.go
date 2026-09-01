@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -830,6 +831,11 @@ func (o *SwarmOrchestrator) Execute(ctx context.Context, plan *SwarmPlan, prompt
 		result.Injection = injectionResult
 		if injectionResult != nil && injectionResult.Failed > 0 {
 			result.Errors = append(result.Errors, fmt.Errorf("prompt injection failed for %d/%d panes", injectionResult.Failed, injectionResult.TotalPanes))
+		}
+		if injectionResult != nil && injectionResult.Unconfirmed > 0 {
+			// bd-ljd: a pane whose delivery could not be confirmed after one
+			// retry is reported loudly, by name — never left silently empty.
+			result.Errors = append(result.Errors, fmt.Errorf("marching orders unconfirmed after retry for pane(s): %s", strings.Join(injectionResult.UnconfirmedPanes(), ", ")))
 		}
 		if err != nil {
 			return result, err

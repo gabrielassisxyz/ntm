@@ -519,6 +519,18 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 		if execResult.Injection.Failed > 0 {
 			output.PrintWarningf("%d panes failed prompt injection (see logs)", execResult.Injection.Failed)
 		}
+		if execResult.Injection.Unconfirmed > 0 {
+			// bd-ljd: name every pane whose marching orders could not be
+			// confirmed after one retry, so an unprompted pane is never
+			// discovered an hour later showing only its banner.
+			output.PrintWarningf("%d pane(s) could not be confirmed as having received the marching orders:", execResult.Injection.Unconfirmed)
+			for _, inj := range execResult.Injection.Results {
+				if inj.DeliveryError == "" {
+					continue
+				}
+				output.PrintWarningf("  %s: %s", inj.SessionPane, inj.DeliveryError)
+			}
+		}
 	}
 
 	// Phase 4 (optional): Wait for agents to reach idle/ready state.

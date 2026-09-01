@@ -47,6 +47,18 @@ type InjectionResult struct {
 	Duration    time.Duration `json:"duration"`
 	Error       string        `json:"error,omitempty"`
 	SentAt      time.Time     `json:"sent_at"`
+
+	// bd-ljd post-delivery read-back verdict. DeliveryConfirmed means a
+	// capture after delivery showed evidence the prompt landed; the zero
+	// value with an empty DeliveryError means the read-back did not run for
+	// this result (non-spawn injection paths). DeliverySignal names the
+	// evidence that confirmed it, DeliveryRetried records that a re-send was
+	// issued, and DeliveryError is the operator-facing report when delivery
+	// could not be confirmed even after the retry.
+	DeliveryConfirmed bool   `json:"delivery_confirmed"`
+	DeliverySignal    string `json:"delivery_signal,omitempty"`
+	DeliveryRetried   bool   `json:"delivery_retried,omitempty"`
+	DeliveryError     string `json:"delivery_error,omitempty"`
 }
 
 // BatchInjectionResult tracks the results of a batch injection operation.
@@ -56,10 +68,17 @@ type BatchInjectionResult struct {
 	Failed     int               `json:"failed"`
 	Results    []InjectionResult `json:"results"`
 	Duration   time.Duration     `json:"duration"`
+
+	// Unconfirmed counts panes whose send reported success but whose
+	// delivery the bd-ljd read-back could not confirm after one retry
+	// (bd-ljd). These panes are named in UnconfirmedPanes and reported
+	// loudly; Successful keeps its send-level meaning.
+	Unconfirmed int `json:"unconfirmed"`
 }
 
 type promptInjectionTmuxClient interface {
 	CaptureForStatusDetectionContext(context.Context, string) (string, error)
+	CapturePaneOutputContext(context.Context, string, int) (string, error)
 	GetPanes(string) ([]tmux.Pane, error)
 	SendKeys(string, string, bool) error
 	SendKeysForAgent(string, string, bool, tmux.AgentType) error
@@ -107,6 +126,21 @@ type PromptInjector struct {
 	// When true, StaggerDelay is ignored and GetOptimalDelay() is used instead.
 	// Default: false
 	UseAdaptiveDelay bool
+
+	// bd-ljd post-delivery read-back timing knobs. Zero values fall back to
+	// the defaults in delivery_readback.go; tests shorten them.
+
+	// DeliverySettleDelay is how long the read-back waits after a send
+	// before its first capture. Default: 500ms
+	DeliverySettleDelay time.Duration
+
+	// DeliveryPollInterval is the spacing between read-back captures.
+	// Default: 250ms
+	DeliveryPollInterval time.Duration
+
+	// DeliveryConfirmWindow is how long one confirm pass polls for evidence
+	// before declaring the pane unconfirmable for that pass. Default: 3s
+	DeliveryConfirmWindow time.Duration
 }
 
 // NewPromptInjector creates a new PromptInjector with default settings.
@@ -499,9 +533,17 @@ func (p *PromptInjector) InjectSwarmWithContext(ctx context.Context, plan *Swarm
 
 	result, err := p.InjectBatchWithContext(ctx, targets, prompt)
 
+	// bd-ljd: read back each pane and confirm the marching orders landed.
+	// Runs only on the swarm spawn path; a batched send that reported
+	// success but never reached the agent is the silent failure this fixes.
+	if result != nil {
+		p.confirmSwarmDeliveries(ctx, prompt, result)
+	}
+
 	p.logger().Info("[PromptInjector] swarm_inject_complete",
 		"successful", result.Successful,
 		"failed", result.Failed,
+		"unconfirmed", result.Unconfirmed,
 		"duration", result.Duration)
 
 	return result, err
