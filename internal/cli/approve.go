@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,6 +18,7 @@ import (
 
 func newApproveCmd() *cobra.Command {
 	var reason string
+	var actor string
 
 	cmd := &cobra.Command{
 		Use:   "approve [token]",
@@ -39,8 +41,8 @@ Examples:
   ntm approve deny abc123 --reason "Too risky"
   ntm approve show abc123             # Show approval details
 
-Identity note: the approver identity recorded on decisions is taken from the
-NTM_USER (or USER) environment variable. It is asserted, not authenticated —
+Identity note: the approver identity is taken from --as, AGENT_NAME,
+NTM_USER, or USER (in that order). It is asserted, not authenticated —
 any process or person with shell access to this machine can approve or deny
 under any name. Treat the approval trail as attribution among cooperating
 operators on a trusted host, not as an authentication boundary.`,
@@ -49,9 +51,10 @@ operators on a trusted host, not as an authentication boundary.`,
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			return runApprove(args[0], IsJSONOutput())
+			return runApprove(args[0], actor, IsJSONOutput())
 		},
 	}
+	cmd.PersistentFlags().StringVar(&actor, "as", "", "Record this asserted approver identity")
 
 	// list - list pending approvals
 	var listLimit, listOffset int
@@ -71,7 +74,7 @@ operators on a trusted host, not as an authentication boundary.`,
 		Short: "Deny a pending request",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runApproveDeny(args[0], reason, IsJSONOutput())
+			return runApproveDeny(args[0], reason, actor, IsJSONOutput())
 		},
 	}
 	denyCmd.Flags().StringVar(&reason, "reason", "", "Reason for denial")
@@ -125,7 +128,7 @@ func getApprovalEngine() (*approval.Engine, *state.Store, error) {
 	return engine, store, nil
 }
 
-func runApprove(token string, jsonOutput bool) error {
+func runApprove(token, actor string, jsonOutput bool) error {
 	engine, store, err := getApprovalEngine()
 	if err != nil {
 		return outputError(err, jsonOutput)
@@ -133,7 +136,7 @@ func runApprove(token string, jsonOutput bool) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	currentUser := getCurrentApprover()
+	currentUser := resolveSLBApprovalIdentity(actor)
 
 	if err := engine.Approve(ctx, token, currentUser); err != nil {
 		return outputError(err, jsonOutput)
@@ -249,7 +252,7 @@ func runApproveList(jsonOutput bool, limit, offset int) error {
 	return nil
 }
 
-func runApproveDeny(token, reason string, jsonOutput bool) error {
+func runApproveDeny(token, reason, actor string, jsonOutput bool) error {
 	engine, store, err := getApprovalEngine()
 	if err != nil {
 		return outputError(err, jsonOutput)
@@ -257,7 +260,7 @@ func runApproveDeny(token, reason string, jsonOutput bool) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	currentUser := getCurrentApprover()
+	currentUser := resolveSLBApprovalIdentity(actor)
 
 	if err := engine.Deny(ctx, token, currentUser, reason); err != nil {
 		return outputError(err, jsonOutput)
@@ -399,13 +402,17 @@ func runApproveHistory(jsonOutput bool) error {
 	return nil
 }
 
-func getCurrentApprover() string {
-	// Try to get from environment or config
-	if user := os.Getenv("NTM_USER"); user != "" {
-		return user
+// resolveSLBApprovalIdentity selects the asserted identity used by the
+// two-person approval trail. An agent name must win over the shared OS login:
+// on a single-login machine, USER cannot distinguish two separate operators.
+func resolveSLBApprovalIdentity(explicit string) string {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		return explicit
 	}
-	if user := os.Getenv("USER"); user != "" {
-		return user
+	for _, name := range []string{"AGENT_NAME", "NTM_USER", "USER"} {
+		if identity := strings.TrimSpace(os.Getenv(name)); identity != "" {
+			return identity
+		}
 	}
 	return "unknown"
 }

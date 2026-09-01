@@ -88,6 +88,8 @@ type renewCall struct {
 
 type forceReleaseCall struct {
 	Agent          string
+	HasAgentName   bool
+	HasToken       bool
 	Project        string
 	ReservationID  int
 	Note           string
@@ -407,8 +409,12 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 			})
 			writeResponse(stub.renewResult)
 		case "force_release_file_reservation":
+			_, hasAgentName := args["agent_name"]
+			_, hasToken := args["registration_token"]
 			stub.forceReleaseCalls = append(stub.forceReleaseCalls, forceReleaseCall{
 				Agent:          toString(args["agent_name"]),
+				HasAgentName:   hasAgentName,
+				HasToken:       hasToken,
 				Project:        toString(args["project_key"]),
 				ReservationID:  toInt(args["file_reservation_id"]),
 				Note:           toString(args["note"]),
@@ -1884,9 +1890,6 @@ func TestRunForceReleaseUsesSessionProjectDir(t *testing.T) {
 	}
 
 	session := "mysession"
-	agentName := "BlueLake"
-	saveSessionAgentForTest(t, session, projectKey, agentName)
-
 	stub := newMailStub(t, nil)
 	defer stub.Close()
 
@@ -1895,6 +1898,7 @@ func TestRunForceReleaseUsesSessionProjectDir(t *testing.T) {
 	t.Cleanup(func() { cfg = oldCfg })
 
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Setenv("AGENT_NAME", "")
 	t.Chdir(canonicalTempDir(t))
 
 	// bd-2y2on: force-release is approval-gated (default policy blocks and
@@ -1919,6 +1923,142 @@ func TestRunForceReleaseUsesSessionProjectDir(t *testing.T) {
 	}
 	if got := stub.forceReleaseCalls[0].Project; got != projectKey {
 		t.Fatalf("expected force-release project %q, got %q", projectKey, got)
+	}
+	if call := stub.forceReleaseCalls[0]; call.HasAgentName || call.Agent != "" || call.HasToken {
+		t.Fatalf("auto policy operator call must be anonymous and token-free, got %+v", call)
+	}
+}
+
+func TestRunForceReleaseRecordsSessionAgentAsSLBRequester(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "approval-session")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	session := "approval-session"
+	saveSessionAgentForTest(t, session, projectKey, "RequestingAgent")
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Setenv("AGENT_NAME", "AmbientAgent")
+	t.Setenv("NTM_USER", "shared-login")
+	t.Setenv("USER", "shared-login")
+	t.Chdir(canonicalTempDir(t))
+
+	ntmDir := filepath.Join(os.Getenv("HOME"), ".ntm")
+	if err := os.MkdirAll(ntmDir, 0o755); err != nil {
+		t.Fatalf("mkdir hermetic .ntm: %v", err)
+	}
+	approvalPolicy := "version: 1\nautomation:\n  force_release: approval\n"
+	if err := os.WriteFile(filepath.Join(ntmDir, "policy.yaml"), []byte(approvalPolicy), 0o644); err != nil {
+		t.Fatalf("write approval policy: %v", err)
+	}
+
+	err := runForceRelease(t.Context(), session, 861, "holder crashed", true, true, "")
+	if err == nil || !strings.Contains(err.Error(), "approval required") {
+		t.Fatalf("approval policy should block and create an SLB request, got %v", err)
+	}
+
+	engine, store, err := getApprovalEngine()
+	if err != nil {
+		t.Fatalf("open approval engine: %v", err)
+	}
+	defer store.Close()
+	pending, err := engine.ListPending(t.Context())
+	if err != nil {
+		t.Fatalf("list pending approvals: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending approvals = %d, want 1", len(pending))
+	}
+	if got := pending[0].RequestedBy; got != "RequestingAgent" {
+		t.Fatalf("approval requester = %q, want session agent RequestingAgent", got)
+	}
+}
+
+func TestRunForceReleaseOperatorShellPolicyToggle(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "orphaned-session")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	session := "orphaned-session"
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("NTM_USER", "operator-login")
+	t.Setenv("USER", "operator-login")
+	t.Chdir(canonicalTempDir(t))
+
+	ntmDir := filepath.Join(os.Getenv("HOME"), ".ntm")
+	if err := os.MkdirAll(ntmDir, 0o755); err != nil {
+		t.Fatalf("mkdir hermetic .ntm: %v", err)
+	}
+
+	// 1. Toggle OFF (approval policy): operator shell force-release is refused.
+	approvalPolicy := "version: 1\nautomation:\n  force_release: approval\n"
+	if err := os.WriteFile(filepath.Join(ntmDir, "policy.yaml"), []byte(approvalPolicy), 0o644); err != nil {
+		t.Fatalf("write approval policy: %v", err)
+	}
+	err := runForceRelease(t.Context(), session, 861, "orphaned holder", true, true, "")
+	if err == nil || !strings.Contains(err.Error(), "approval required") {
+		t.Fatalf("with toggle OFF (approval), force-release must be refused: %v", err)
+	}
+	if len(stub.forceReleaseCalls) != 0 {
+		t.Fatalf("with toggle OFF, no agentmail call should be made, got %d", len(stub.forceReleaseCalls))
+	}
+
+	// 2. Toggle OFF (never policy): operator shell force-release is refused.
+	neverPolicy := "version: 1\nautomation:\n  force_release: never\n"
+	if err := os.WriteFile(filepath.Join(ntmDir, "policy.yaml"), []byte(neverPolicy), 0o644); err != nil {
+		t.Fatalf("write never policy: %v", err)
+	}
+	err = runForceRelease(t.Context(), session, 861, "orphaned holder", true, true, "")
+	if err == nil || !strings.Contains(err.Error(), "automation.force_release=never") {
+		t.Fatalf("with toggle OFF (never), force-release must be refused: %v", err)
+	}
+	if len(stub.forceReleaseCalls) != 0 {
+		t.Fatalf("with toggle OFF, no agentmail call should be made, got %d", len(stub.forceReleaseCalls))
+	}
+
+	// 3. Toggle ON (auto policy): operator shell force-release succeeds against orphaned reservation
+	// without needing a registration_token or registered agent.
+	autoPolicy := "version: 1\nautomation:\n  force_release: auto\n"
+	if err := os.WriteFile(filepath.Join(ntmDir, "policy.yaml"), []byte(autoPolicy), 0o644); err != nil {
+		t.Fatalf("write auto policy: %v", err)
+	}
+	if err := runForceRelease(t.Context(), session, 861, "orphaned holder", true, true, ""); err != nil {
+		t.Fatalf("with toggle ON (auto), operator shell force-release must succeed: %v", err)
+	}
+	if len(stub.forceReleaseCalls) != 1 {
+		t.Fatalf("expected 1 agentmail force-release call with toggle ON, got %d", len(stub.forceReleaseCalls))
+	}
+	call := stub.forceReleaseCalls[0]
+	if call.ReservationID != 861 {
+		t.Fatalf("reservation ID = %d, want 861", call.ReservationID)
+	}
+	if call.HasAgentName || call.Agent != "" || call.HasToken {
+		t.Fatalf("operator shell call must be anonymous and token-free, got %+v", call)
 	}
 }
 
