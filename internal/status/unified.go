@@ -180,6 +180,33 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		}
 	}
 
+	// Antigravity gets the same shape (bd-my3). The agent's input box is
+	// drawn identically while waiting and while working, and the parser's
+	// substring working scan (`running`, `analyzing`, `generating`, ...)
+	// fires on scrollback left by the previous turn, so a healthy pane at
+	// its prompt resolved to StateWorking every poll. The arm asks: is
+	// the TUI's own chevron (`>>>`, `>`, `agy>`) showing in the live
+	// window? If yes, the agent is at its prompt and idle. If no, fall
+	// through to the velocity/error/heuristic chain below so a mid-boot
+	// or wedged pane is not mislabeled idle.
+	//
+	// detectStateFlags already gates on !IsWorking when IsIdle is set, so
+	// a working turn that incidentally draws a chevron mid-stream
+	// (extremely rare for agy) will not be misclassified idle by this arm
+	// — the parser's IsWorking still wins. We are rescuing the
+	// Idle-with-false-Working case, not introducing a new false-idle one.
+	//
+	// Scoped to Antigravity on purpose. The legacy Gemini CLI keeps the
+	// bd-#234 first-observation-is-working behavior, which is locked in
+	// by TestSessionObserverAppliesPaneLocalActivityBound; that is a
+	// load-bearing part of the ntm#213 follow-up and the agy case does
+	// not need to override it.
+	if agentType == string(agent.AgentTypeAntigravity) {
+		if agyTuiPromptShowing(output) {
+			return StateIdle, ErrorNone
+		}
+	}
+
 	// Check if at prompt (idle) - prioritize this when velocity is low
 	isAtPrompt := DetectIdleFromOutput(output, agentType)
 	if isAtPrompt && isLowVelocity {
@@ -239,6 +266,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	// idle and error priorities.
 	switch agent.AgentType(agentType) {
 	case agent.AgentTypeGemini,
+		agent.AgentTypeAntigravity,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,

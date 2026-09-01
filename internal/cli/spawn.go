@@ -3501,16 +3501,64 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	sort.Strings(failedPaneIDs)
 	setupErrorMessages := make([]string, 0, len(failedPaneIDs))
 	setupErrorList := make([]error, 0, len(failedPaneIDs))
+	promptDeliveryErrors := make([]output.SpawnPromptDeliveryError, 0, len(failedPaneIDs))
 	for _, paneID := range failedPaneIDs {
 		setupErrorMessages = append(setupErrorMessages, fmt.Sprintf("pane %s: %v", paneID, setupErrors[paneID]))
 		setupErrorList = append(setupErrorList, setupErrors[paneID])
+		promptDeliveryErrors = append(promptDeliveryErrors, output.SpawnPromptDeliveryError{
+			PaneID:  paneID,
+			Message: setupErrors[paneID].Error(),
+		})
 	}
 	setupErrorsMu.Unlock()
-	if len(setupErrorMessages) > 0 {
+	// bd-my3: spawn prompt delivery is per-pane. When at least one pane
+	// failed its readiness gate, the spawn must NOT exit with an error
+	// status while leaving the session and the surviving panes usable —
+	// the brief requires the failing pane to be marked in the response
+	// and the rest of the session to be left for the operator (or
+	// --robot-recover) to inspect, not a hard error exit.
+	//
+	// Two opt-outs to the partial-success contract:
+	//   * --verify-boot keeps the pre-bd-my3 strict behavior: every
+	//     launched agent must reach a ready state or the spawn fails.
+	//   * The session-creation step above is a different surface — a
+	//     session that never came up has no panes to be "alive and
+	//     untagged" in, and the previous hard-fail path is the right
+	//     answer for it. It is handled before this block.
+	//
+	// The non-JSON path prints a clear partial-success summary so an
+	// operator running spawn from a terminal sees which panes were
+	// skipped and why; the JSON path attaches the same list to the
+	// response's prompt_delivery field so an orchestrator can branch
+	// on it without parsing prose.
+	if len(setupErrorMessages) > 0 && opts.VerifyBoot {
 		return outputError(fmt.Errorf(
-			"spawn prompt setup failed: %s: %w; the session and affected panes still exist",
+			"spawn --verify-boot: %s: %w; the session and affected panes still exist",
 			strings.Join(setupErrorMessages, "; "), errors.Join(setupErrorList...),
 		))
+	}
+	if len(setupErrorMessages) > 0 {
+		// Record the per-pane failures for the JSON response. The build
+		// path below attaches this to spawnResponse.PromptDelivery when
+		// it runs in JSON mode; the non-JSON path prints an inline
+		// summary here.
+		if !IsJSONOutput() {
+			fmt.Println()
+			fmt.Printf("⚠ spawn prompt delivery: %d of %d agent pane(s) were not ready; the session is left usable, retry the failing pane(s) with --robot-send or inspect with --robot-tail:\n",
+				len(setupErrorMessages), len(launchedAgents))
+			for _, msg := range setupErrorMessages {
+				fmt.Printf("  - %s\n", msg)
+			}
+		}
+		// Stash the partial-failure data on a package-level var so the
+		// JSON path below can pick it up after the early hard-fail branch
+		// is gone. The lock is not needed here because the spawned
+		// goroutines have all joined (setupWg.Wait above).
+		lifecyclePartialMutation = true
+		lifecycleSessionMayExist = true
+		for _, paneID := range failedPaneIDs {
+			lifecycleAffectedPaneIDs = append(lifecycleAffectedPaneIDs, paneID)
+		}
 	}
 
 	if maxStaggerDelay > 0 {
@@ -3699,6 +3747,14 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			Recovery:            newRecoverySpawnStatus(recoveryEnabled, rc),
 			CoordinatorIdentity: coordinatorIdentity,
 			ProfileSet:          opts.ProfileSetName,
+			// bd-my3: per-pane prompt-delivery outcome. Total is the
+			// number of agent panes that were launched, Delivered is
+			// those whose readiness gate cleared, Failed is the rest.
+			// PaneErrors lists each failing pane with the readiness
+			// signal or dispatch error that blocked it. Absent when
+			// no per-pane prompt delivery was attempted (e.g. the
+			// spawn was session-only).
+			PromptDelivery: buildSpawnPromptDeliveryStatus(len(launchedAgents), promptDeliveryErrors),
 		}
 
 		// If assignment is enabled, wait for agents and run assignment phase
@@ -4915,6 +4971,33 @@ func newRecoverySpawnStatus(enabled bool, rc *RecoveryContext) *output.RecoveryS
 		status.Warnings = append(status.Warnings, rc.Error.Details...)
 	}
 	return status
+}
+
+// buildSpawnPromptDeliveryStatus assembles the per-pane prompt-delivery
+// outcome the spawn response carries when at least one agent pane was
+// launched. The status is nil when no per-pane prompt delivery was
+// attempted (e.g. a session-only spawn) so older consumers that key on
+// the field's presence keep working.
+//
+// bd-my3: the readiness gate is per-pane, not all-or-nothing, and a single
+// ambiguous pane (e.g. confidence 0.50 below the 0.75 floor) must not
+// fail the whole spawn. totalAgentPanes is the number of agent panes the
+// spawn attempted to deliver a prompt to, and paneErrors carries the
+// per-pane failure list. Total is the number of agent panes launched,
+// Delivered is the count that passed their readiness gate, and Failed is
+// Total - Delivered. paneErrors is already sorted by pane_id at the
+// call site so the response is byte-stable across runs (the same input
+// set must produce the same output JSON).
+func buildSpawnPromptDeliveryStatus(totalAgentPanes int, paneErrors []output.SpawnPromptDeliveryError) *output.SpawnPromptDeliveryStatus {
+	if totalAgentPanes == 0 && len(paneErrors) == 0 {
+		return nil
+	}
+	return &output.SpawnPromptDeliveryStatus{
+		Total:      totalAgentPanes,
+		Delivered:  totalAgentPanes - len(paneErrors),
+		Failed:     len(paneErrors),
+		PaneErrors: paneErrors,
+	}
 }
 
 // loadRecoveryBeads loads in-progress, completed, and blocked beads from BV.

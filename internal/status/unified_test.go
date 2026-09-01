@@ -2187,3 +2187,81 @@ func TestSessionObserverCASSDerivedSanitizedReplays(t *testing.T) {
 		})
 	}
 }
+
+// TestAnalyzeAgyIdleClassifiesIdlePinsDeterministicIdleArm pins the bd-my3
+// arm in UnifiedDetector.AnalyzeAt: a healthy Antigravity pane at its
+// chevron prompt (single, triple, or branded) must resolve to StateIdle and
+// confidence 0.95 in a single classifier pass, regardless of how far the
+// memory/model footer has pushed the prompt past the parser's 5-line idle
+// window. The reproduction was an agy pane that `ntm assign --beads ... --pane
+// <agy>` refused as "pane is busy (state: working)" on a visibly-idle pane
+// (orchestrator survey, 2026-08-31). Without this arm, the parser's
+// substring working scan over the last 20 lines fired on the prior turn's
+// scrollback ("running migration scripts", "analyzing schema", ...) and
+// observationConfidence was downgraded to 0.5 — below the 0.75
+// SafeToDispatch floor, so direct assign was refused on every poll.
+func TestAnalyzeAgyIdleClassifiesIdlePinsDeterministicIdleArm(t *testing.T) {
+	t.Parallel()
+
+	const idleFooter = `gemini-2.5-pro /model | 396.8 MB
+
+Antigravity connected
+
+Task completed successfully.
+
+running migration scripts
+analyzing schema
+
+What would you like next?
+
+>>>
+
+Memory: 312.4 MB used / 1.2 GB total
+Model: gemini-2.5-pro (medium)
+Ready for your next command`
+
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{"triple-chevron with memory footer", idleFooter},
+		{"single-chevron with memory footer", strings.Replace(idleFooter, ">>>\n", ">\n", 1)},
+		{"agy-branded prompt with memory footer", strings.Replace(idleFooter, ">>>\n", "agy>\n", 1)},
+	}
+
+	det := NewDetector()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := det.AnalyzeAt("%92", "demo__agy_92", "agy", tt.output, now.Add(-time.Minute), now)
+			if res.State != StateIdle {
+				t.Fatalf("state = %s, want idle — the bd-my3 arm must catch the chevron past the parser's 5-line window", res.State)
+			}
+		})
+	}
+}
+
+// TestAnalyzeAgyWorkingStaysWorking guards the positive direction: a working
+// Antigravity pane (no prompt in the live tail, scrollback full of working
+// keywords) must still resolve to StateWorking after the bd-my3 arm was
+// added. The arm only short-circuits to StateIdle when the chevron is
+// actually in the live window, so a mid-turn pane that has not yet drawn
+// its prompt continues to read as working via the Gemini/Antigravity
+// parser-working branch (also added in bd-my3, since the parser check
+// before this bead omitted AgentTypeAntigravity from the working switch).
+func TestAnalyzeAgyWorkingStaysWorking(t *testing.T) {
+	t.Parallel()
+
+	det := NewDetector()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	const working = `generating output
+running migration scripts
+analyzing schema
+processing input
+executing tests`
+
+	res := det.AnalyzeAt("%92", "demo__agy_92", "agy", working, now.Add(-time.Minute), now)
+	if res.State != StateWorking {
+		t.Fatalf("state = %s, want working — a mid-turn agy pane with no prompt must still read as working after bd-my3", res.State)
+	}
+}

@@ -1,0 +1,16 @@
+gemini-2.5-pro /model | 396.8 MB
+
+Antigravity connected
+
+Task completed successfully.
+
+running migration scripts
+analyzing schema
+
+What would you like next?
+
+>>>
+
+Memory: 312.4 MB used / 1.2 GB total
+Model: gemini-2.5-pro (medium)
+Ready for your next command

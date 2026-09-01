@@ -370,9 +370,27 @@ var (
 	}
 
 	// gmiIdlePatterns indicates waiting for input.
+	//
+	// Two TUI prompt shapes live here: the agent's own branded prompt
+	// (`gemini>` for Gemini, `agy>` for Antigravity) and the bare chevron
+	// prompt (`>` or `>>>`) both TUIs draw at the bottom of the input box.
+	// The chevron form is shared with many agent TUIs and the bare `>` form
+	// would over-match if it were not anchored to end-of-line, so every
+	// pattern below carries the trailing `\s*$` anchor.
+	//
+	// bd-my3: the bare `>` match was the only agy idle signal before this
+	// bead — and the `>>>` chevron the production Antigravity TUI actually
+	// draws slipped through, so a healthy agy pane at its prompt classified
+	// as working on every poll.
 	gmiIdlePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`>\s*$`),       // Standard prompt
-		regexp.MustCompile(`gemini>\s*$`), // Gemini prompt
+		regexp.MustCompile(`>>>\s*$`),          // Antigravity/Gemini triple-chevron prompt
+		regexp.MustCompile(`(?m)^>>>\s*$`),     // Antigravity/Gemini triple-chevron prompt (multiline)
+		regexp.MustCompile(`>\s*$`),            // Standard single-chevron prompt
+		regexp.MustCompile(`(?m)^>\s*$`),       // Standard single-chevron prompt (multiline)
+		regexp.MustCompile(`gemini>\s*$`),      // Gemini branded prompt
+		regexp.MustCompile(`(?m)^gemini>\s*$`), // Gemini branded prompt (multiline)
+		regexp.MustCompile(`agy>\s*$`),         // Antigravity branded prompt
+		regexp.MustCompile(`(?m)^agy>\s*$`),    // Antigravity branded prompt (multiline)
 	}
 
 	// gmiErrorPatterns indicates error conditions.
