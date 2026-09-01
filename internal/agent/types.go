@@ -223,6 +223,15 @@ type AgentState struct {
 	IsContextLow  bool `json:"context_low"`  // Below configured threshold
 	IsIdle        bool `json:"is_idle"`      // Waiting for user input (safe to restart)
 	IsInError     bool `json:"is_in_error"`  // Error state detected
+	// IsFrozen is the cross-sample wedge signal (bd-3b9): the agent
+	// process's CPU time is not advancing AND the screen fingerprint
+	// has not changed across the last N samples. Distinct from IsIdle
+	// (a process at a prompt that still has CPU headroom) and IsWorking
+	// (a process producing output) because a frozen pane is wedged, and
+	// killing it is destructive while the operator needs to know it
+	// exists. The parser does not set this — it is the responsibility
+	// of the cross-sample classifier in status.FrozenDetector.
+	IsFrozen bool `json:"is_frozen,omitempty"`
 
 	// Evidence for debugging and confidence calculation
 	WorkIndicators  []string `json:"work_indicators,omitempty"`  // Patterns that indicate working
@@ -258,6 +267,17 @@ const (
 
 	// RecommendUnknown means we couldn't determine the agent state with confidence.
 	RecommendUnknown Recommendation = "UNKNOWN"
+
+	// RecommendFrozen means the agent process is wedged: its CPU time is
+	// not advancing AND the screen fingerprint is not changing across
+	// consecutive samples (bd-3b9). Distinct from SAFE_TO_RESTART (a
+	// process that is genuinely at a prompt and ready for input) because
+	// a frozen pane cannot accept input either — a SendKeys to a frozen
+	// pane lands in its dead TTY and the operator needs to know to
+	// intervene. Held-claim actors use this to flag a pane that has
+	// been frozen for N ticks rather than letting it keep holding its
+	// claim indefinitely.
+	RecommendFrozen Recommendation = "FROZEN"
 )
 
 // GetRecommendation derives the recommended action from the current state.
@@ -266,7 +286,13 @@ const (
 //  2. Error state -> handle error
 //  3. Working -> DO NOT INTERRUPT (critical user requirement)
 //  4. Idle -> safe to restart
-//  5. Unknown -> be cautious
+//  5. Frozen -> FROZEN (bd-3b9): a pane that has stopped making progress
+//     on the (cputime, screen) signal is not safe to interact with and not
+//     idle either; the operator must intervene. The parser does not set
+//     IsFrozen today — the cross-sample classifier in status.FrozenDetector
+//     does — so this arm fires when an upstream caller (the robot surface)
+//     has already decided.
+//  6. Unknown -> be cautious
 func (s *AgentState) GetRecommendation() Recommendation {
 	// Priority 1: Rate limited - must wait, nothing else matters
 	if s.IsRateLimited {
@@ -292,6 +318,11 @@ func (s *AgentState) GetRecommendation() Recommendation {
 		return RecommendSafeToRestart
 	}
 
+	// Priority 5: Frozen (bd-3b9) - wedge, not safe to act on either way
+	if s.IsFrozen {
+		return RecommendFrozen
+	}
+
 	// Default: couldn't determine state
 	return RecommendUnknown
 }
@@ -305,7 +336,7 @@ func (r Recommendation) String() string {
 // (as opposed to waiting or being uncertain).
 func (r Recommendation) IsActionable() bool {
 	switch r {
-	case RecommendSafeToRestart, RecommendErrorState:
+	case RecommendSafeToRestart, RecommendErrorState, RecommendFrozen:
 		return true
 	default:
 		return false
