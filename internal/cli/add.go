@@ -640,7 +640,14 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			return outputError(fmt.Errorf("add canceled before creating %s pane: %w", agentTypeStr, err))
 		}
 
-		paneID, err := tmux.SplitWindowContext(ctx, session, dir)
+		paneOrdinal := len(panes) + len(addedAgents) + 1
+		paneAgentName := swarm.DerivePaneAgentName(session, paneOrdinal)
+		if paneAgentName == "" {
+			return outputError(fmt.Errorf("deriving coordination identity for pane %d in session %q", paneOrdinal, session))
+		}
+		paneID, err := tmux.SplitWindowWithEnvContext(ctx, session, dir, map[string]string{
+			swarm.AgentNameVar: paneAgentName,
+		})
 		if paneID != "" {
 			partialMutation = true
 			affectedPaneIDs = append(affectedPaneIDs, paneID)
@@ -981,6 +988,7 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		addedAgents = append(addedAgents, spawnedAgentInfo{
 			paneIndex:     num,
 			paneID:        paneID,
+			agentName:     paneAgentName,
 			paneTitle:     title,
 			agentType:     agentTypeStr,
 			model:         agent.Model,

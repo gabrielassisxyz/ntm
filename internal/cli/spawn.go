@@ -2568,7 +2568,14 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		if cfg != nil && cfg.Tmux.HistoryLimit > 0 {
 			historyLimit = cfg.Tmux.HistoryLimit
 		}
-		if err := tmux.CreateSessionWithHistoryLimitContext(ctx, opts.Session, dir, historyLimit); err != nil {
+		firstPaneAgentName := swarm.DerivePaneAgentName(opts.Session, 1)
+		if firstPaneAgentName == "" {
+			return outputError(fmt.Errorf("deriving coordination identity for the first pane in session %q", opts.Session))
+		}
+		if err := tmux.CreateSessionWithEnvContext(ctx, opts.Session, dir, historyLimit,
+			map[string]string{swarm.GitIdentityEnabledVar: "1"},
+			map[string]string{swarm.AgentNameVar: firstPaneAgentName},
+		); err != nil {
 			probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			if existsAfterError, probeErr := tmux.SessionExistsContext(probeCtx, opts.Session); probeErr == nil && existsAfterError {
 				lifecycleSessionMayExist = true
@@ -2671,7 +2678,14 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			if err := ctx.Err(); err != nil {
 				return outputError(fmt.Errorf("spawn canceled before splitting pane %d: %w", i+1, err))
 			}
-			paneID, err := tmux.SplitWindowContext(ctx, opts.Session, dir)
+			paneOrdinal := existingPanes + i + 1
+			paneAgentName := swarm.DerivePaneAgentName(opts.Session, paneOrdinal)
+			if paneAgentName == "" {
+				return outputError(fmt.Errorf("deriving coordination identity for pane %d in session %q", paneOrdinal, opts.Session))
+			}
+			paneID, err := tmux.SplitWindowWithEnvContext(ctx, opts.Session, dir, map[string]string{
+				swarm.AgentNameVar: paneAgentName,
+			})
 			if paneID != "" {
 				lifecyclePartialMutation = true
 				lifecycleAffectedPaneIDs = append(lifecycleAffectedPaneIDs, paneID)
@@ -2750,6 +2764,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	type launchedAgent struct {
 		paneID        string
 		paneIndex     int
+		agentName     string
 		paneTitle     string // e.g., "myproject__cc_1"
 		agentType     string
 		model         string // alias
@@ -2897,6 +2912,10 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 
 		pane := panes[agentNum]
+		paneAgentName := swarm.DerivePaneAgentName(opts.Session, agentNum+1)
+		if paneAgentName == "" {
+			return outputError(fmt.Errorf("deriving coordination identity for pane %d in session %q", agentNum+1, opts.Session))
+		}
 		if agent.Type == AgentTypeGrok {
 			if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
 				return outputError(fmt.Errorf("launching %s agent: %w", agent.Type, err))
@@ -3362,6 +3381,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		launchedAgents = append(launchedAgents, launchedAgent{
 			paneID:              pane.ID,
 			paneIndex:           pane.Index,
+			agentName:           paneAgentName,
 			paneTitle:           title,
 			agentType:           string(agent.Type),
 			model:               agent.Model,
@@ -3654,6 +3674,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 				spawnedAgents[i] = spawnedAgentInfo{
 					paneIndex:     agent.paneIndex,
 					paneID:        agent.paneID,
+					agentName:     agent.agentName,
 					paneTitle:     agent.paneTitle,
 					agentType:     agent.agentType,
 					model:         agent.model,
@@ -3761,6 +3782,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			spawnedAgents[i] = spawnedAgentInfo{
 				paneIndex:     agent.paneIndex,
 				paneID:        agent.paneID,
+				agentName:     agent.agentName,
 				paneTitle:     agent.paneTitle,
 				agentType:     agent.agentType,
 				model:         agent.model,
@@ -3823,6 +3845,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			spawnedAgents[i] = spawnedAgentInfo{
 				paneIndex:     agent.paneIndex,
 				paneID:        agent.paneID,
+				agentName:     agent.agentName,
 				paneTitle:     agent.paneTitle,
 				agentType:     agent.agentType,
 				model:         agent.model,
@@ -4364,6 +4387,7 @@ func registerSessionAgent(parentCtx context.Context, sessionName, workingDir str
 type spawnedAgentInfo struct {
 	paneIndex     int
 	paneID        string
+	agentName     string
 	paneTitle     string
 	agentType     string
 	model         string
@@ -4442,7 +4466,7 @@ func registerSpawnedAgents(parentCtx context.Context, workingDir, sessionName st
 			break
 		}
 		// Check if this pane already has an identity from a prior session (#69)
-		if existingName, ok := registry.GetAgent(agent.paneTitle, agent.paneID); ok && existingName != "" {
+		if existingName, ok := registry.GetAgent(agent.paneTitle, agent.paneID); ok && existingName == agent.agentName {
 			status.AgentsRegistered++
 			status.AgentMap[agent.paneID] = existingName
 			if !IsJSONOutput() {
@@ -4466,12 +4490,21 @@ func registerSpawnedAgents(parentCtx context.Context, workingDir, sessionName st
 		if model == "" {
 			model = agent.model
 		}
+		if strings.TrimSpace(agent.agentName) == "" {
+			status.AgentsFailed++
+			if !IsJSONOutput() {
+				output.PrintWarningf("Agent Mail registration skipped for pane %d: missing coordination identity", agent.paneIndex)
+			}
+			continue
+		}
 
 		regCtx, regCancel := context.WithTimeout(parentCtx, 15*time.Second)
-		registered, err := client.CreateAgentIdentity(regCtx, agentmail.RegisterAgentOptions{
-			ProjectKey: workingDir,
-			Program:    program,
-			Model:      model,
+		registered, err := client.RegisterAgent(regCtx, agentmail.RegisterAgentOptions{
+			ProjectKey:      workingDir,
+			Program:         program,
+			Model:           model,
+			Name:            agent.agentName,
+			TaskDescription: fmt.Sprintf("NTM pane %s", agent.agentName),
 		})
 		regCancel()
 
@@ -4487,7 +4520,7 @@ func registerSpawnedAgents(parentCtx context.Context, workingDir, sessionName st
 					// that hasn't already been claimed by a prior pane in this loop.
 					var found *agentmail.Agent
 					for i := range allAgents {
-						if allAgents[i].Program == program && allAgents[i].Model == model {
+						if allAgents[i].Name == agent.agentName && allAgents[i].Program == program && allAgents[i].Model == model {
 							if !reconciledIDs[allAgents[i].ID] {
 								if found == nil || allAgents[i].ID > found.ID {
 									found = &allAgents[i]

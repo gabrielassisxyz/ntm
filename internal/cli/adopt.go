@@ -11,6 +11,7 @@ import (
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -506,7 +507,7 @@ func runAdopt(opts AdoptOptions) error {
 			// handoff) resolve for adopted sessions too (bd-vb7s3). Both helpers
 			// are gated and best-effort.
 			registerSessionAgent(context.Background(), opts.Session, projectDir)
-			registerSpawnedAgents(context.Background(), projectDir, opts.Session, adoptedAgentMailRegistrations(adoptedPanes, opts.AutoName))
+			registerSpawnedAgents(context.Background(), projectDir, opts.Session, adoptedAgentMailRegistrations(adoptedPanes, opts.AutoName, opts.Session))
 		}
 	}
 
@@ -517,7 +518,7 @@ func runAdopt(opts AdoptOptions) error {
 // registration input used by spawn and add. Adopt does not launch an agent, so
 // its model is intentionally unknown; the canonical pane ID and effective
 // title are sufficient to create and persist a resolvable Agent Mail identity.
-func adoptedAgentMailRegistrations(adopted []AdoptedPaneInfo, autoName bool) []spawnedAgentInfo {
+func adoptedAgentMailRegistrations(adopted []AdoptedPaneInfo, autoName bool, sessionName string) []spawnedAgentInfo {
 	registrations := make([]spawnedAgentInfo, 0, len(adopted))
 	for _, pane := range adopted {
 		if pane.AgentType == agentpkg.AgentTypeUser.String() {
@@ -527,9 +528,14 @@ func adoptedAgentMailRegistrations(adopted []AdoptedPaneInfo, autoName bool) []s
 		if autoName {
 			title = pane.NewTitle
 		}
+		// Adopted panes get the same deterministic identity a spawn would
+		// have given them (bd-yf3): without it the registration guard in
+		// registerSpawnedAgents skips them entirely.
+		agentName := swarm.DerivePaneAgentName(sessionName, pane.PaneIndex+1)
 		registrations = append(registrations, spawnedAgentInfo{
 			paneIndex: pane.PaneIndex,
 			paneID:    pane.PaneID,
+			agentName: agentName,
 			paneTitle: title,
 			agentType: pane.AgentType,
 		})
