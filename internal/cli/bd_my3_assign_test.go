@@ -215,3 +215,80 @@ func TestVerifyBootStillHardFailsOnPartialReady(t *testing.T) {
 		t.Errorf("error = %v, want the readiness-issue message", err)
 	}
 }
+
+// agyChevronBeyondFooterCapture is the production-shape capture the
+// status-layer agy arm specifically cures: the chevron sits at the TOP
+// of the visible scrollback with the memory/model footer and a long
+// scrollback of working-keyword noise below it. The status line scan
+// walks only the trailing 12 non-empty lines, so without the agy arm
+// in DetectIdleFromOutput this fixture classifies as not-idle (the
+// chevron is beyond the window, the working-keyword scrollback is in
+// it). The arm's full-output multiline match is the only signal that
+// catches the case.
+const agyChevronBeyondFooterCapture = `>>>
+running migration scripts
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+running tests
+Memory: 312.4 MB used / 1.2 GB total
+Model: gemini-2.5-pro (medium)
+Ready for your next command`
+
+// TestAgyIdleProductionShapeFixturePinsStatusArm pins the bd-my3
+// status-layer agy arm against the production-shape fixture (chevron
+// beyond the line scan's 12-line window). Without the arm, the line
+// scan finds no chevron in the trailing 12 lines, and DetectIdleFromOutput
+// returns false; observationConfidence would then drop to 0.5 and the
+// dispatch gate would refuse every direct assign to a healthy agy pane.
+// The fixture is the brief's reproduction case 1 in miniature: a visible
+// prompt an operator can see, but the classifier must be told the arm
+// fires regardless of how far the memory/model footer has pushed the
+// chevron past the line scan window.
+func TestAgyIdleProductionShapeFixturePinsStatusArm(t *testing.T) {
+	observedAt := time.Now().UTC()
+	detector := statuspkg.NewDetector()
+
+	if !statuspkg.DetectIdleFromOutput(agyChevronBeyondFooterCapture, "agy") {
+		t.Fatal("DetectIdleFromOutput(agy, chevron-beyond-window) = false, want true — the bd-my3 status arm must catch the chevron past the line scan's 12-line window")
+	}
+
+	res := detector.AnalyzeAt("%92", "demo__agy_92", "agy", agyChevronBeyondFooterCapture, observedAt.Add(-time.Minute), observedAt)
+	if res.State != statuspkg.StateIdle {
+		t.Fatalf("AnalyzeAt(agy, chevron-beyond-window) state = %s, want idle — the bd-my3 arm must catch the chevron past the line scan's 12-line window", res.State)
+	}
+
+	obs := newAgySessionObserver(observedAt, agyChevronBeyondFooterCapture)
+	observation, err := obs.Observe(t.Context(), "demo")
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	pane, ok := observation.PaneByID("%92")
+	if !ok {
+		t.Fatal("observed pane missing")
+	}
+	if pane.Current.Status.State != statuspkg.StateIdle {
+		t.Fatalf("pane state = %s, want idle — without the bd-my3 arm, the line scan misses the chevron and observationConfidence drops the pane to 0.5, which the dispatch gate refuses as busy", pane.Current.Status.State)
+	}
+	if pane.Current.Confidence < statuspkg.MinimumDispatchConfidence {
+		t.Fatalf("pane confidence = %.2f, want >= %.2f — without the arm, observationConfidence returns 0.5 for the state=idle-but-DetectIdleFromOutput=false mismatch and the gate refuses the assign", pane.Current.Confidence, statuspkg.MinimumDispatchConfidence)
+	}
+	if !pane.SafeToDispatch() {
+		t.Fatalf("pane SafeToDispatch() = false on a production-shape idle agy pane; the assign path would print `pane is busy (state: %s), use --force to override`", pane.Current.Status.State)
+	}
+}
