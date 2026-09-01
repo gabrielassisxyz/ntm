@@ -30,6 +30,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -66,6 +67,7 @@ var (
 	assignClear       string // Clear specific bead assignments (comma-separated)
 	assignClearPane   string // Clear all assignments for one canonical pane selector
 	assignClearFailed bool   // Clear all failed assignments
+	assignReconcile   bool   // Reconcile durable assignments against Beads
 
 	// Watch mode flags for continuous auto-assignment
 	assignWatch         bool          // Enable watch mode for continuous auto-assignment on completion
@@ -338,6 +340,7 @@ Examples:
 	cmd.Flags().StringVar(&assignClear, "clear", "", "Clear specific bead assignments (comma-separated). Also releases an ntm-created Beads claim whose durable record is gone; another actor's claim is never released")
 	cmd.Flags().StringVar(&assignClearPane, "clear-pane", "", "Clear all assignments for one pane (N, W.P, or %N; use when agent crashed)")
 	cmd.Flags().BoolVar(&assignClearFailed, "clear-failed", false, "Clear all failed assignments")
+	cmd.Flags().BoolVar(&assignReconcile, "reconcile", false, "Retire durable assignments whose Beads work is closed or whose claim was released")
 
 	// Watch mode flags
 	cmd.Flags().BoolVar(&assignWatch, "watch", false, "Enable watch mode for continuous auto-assignment on completion")
@@ -458,6 +461,62 @@ func prepareResolvedAssignCommand(cmd *cobra.Command, session, projectDir string
 	return false, policyProject, closeWebhook, nil
 }
 
+type reconcileAssignmentsOutput struct {
+	Command   string   `json:"command"`
+	Session   string   `json:"session"`
+	Success   bool     `json:"success"`
+	Retired   []string `json:"retired"`
+	Message   string   `json:"message"`
+	Timestamp string   `json:"timestamp"`
+}
+
+// runReconcileAssignments is an explicit, tracker-backed maintenance pass.
+// It deliberately reports an unreachable tracker as a no-op: absence of the
+// source of truth is never evidence that every durable row is stale.
+func runReconcileAssignments(cmd *cobra.Command, session, projectDir string) error {
+	result := reconcileAssignmentsOutput{
+		Command:   "assign",
+		Session:   session,
+		Retired:   []string{},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+	store, err := assignment.LoadStoreStrict(session)
+	if err != nil {
+		result.Message = fmt.Sprintf("assignment ledger unavailable; no reconciliation ran: %v", err)
+		return printReconcileAssignmentsOutput(cmd, result)
+	}
+
+	reconciliation, err := store.ReconcileTracker(cmd.Context(), func(ctx context.Context, beadID string) (assignment.TrackerAssignmentState, error) {
+		details, lookupErr := getBeadAssignmentDetailsForAssignment(ctx, projectDir, beadID)
+		if lookupErr != nil {
+			return assignment.TrackerAssignmentState{}, lookupErr
+		}
+		return assignment.TrackerAssignmentState{Status: details.Status, Assignee: details.Assignee}, nil
+	})
+	if err != nil {
+		result.Message = fmt.Sprintf("tracker unavailable; assignments unchanged: %v", err)
+		return printReconcileAssignmentsOutput(cmd, result)
+	}
+	result.Success = true
+	for _, retired := range reconciliation.Retired {
+		result.Retired = append(result.Retired, retired.BeadID)
+	}
+	if len(result.Retired) == 0 {
+		result.Message = "tracker reconciliation found no stale assignments"
+	} else {
+		result.Message = fmt.Sprintf("retired %d stale assignment(s)", len(result.Retired))
+	}
+	return printReconcileAssignmentsOutput(cmd, result)
+}
+
+func printReconcileAssignmentsOutput(cmd *cobra.Command, result reconcileAssignmentsOutput) error {
+	if IsJSONOutput() {
+		return output.PrintJSON(result)
+	}
+	_, err := fmt.Fprintln(cmd.OutOrStdout(), result.Message)
+	return err
+}
+
 func runAssign(cmd *cobra.Command, args []string) error {
 	var session string
 	if len(args) > 0 {
@@ -486,6 +545,9 @@ func runAssign(cmd *cobra.Command, args []string) error {
 	projectDir, err := resolveAssignProjectDir(cmd.Context(), session)
 	if err != nil {
 		return err
+	}
+	if assignReconcile {
+		return runReconcileAssignments(cmd, session, projectDir)
 	}
 	handled, policyProject, closeWebhook, err := prepareResolvedAssignCommand(cmd, session, projectDir)
 	if err != nil || handled {

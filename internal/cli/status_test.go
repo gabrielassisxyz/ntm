@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -229,5 +230,113 @@ func TestFetchAgentMailStatusSkipsEmptyProjectKey(t *testing.T) {
 	}
 	if stub.ensureCalled != 0 {
 		t.Fatalf("expected no ensure_project call for empty project key, got %d", stub.ensureCalled)
+	}
+}
+
+func TestStatusSurfacesExcludeRetiredAssignmentsByDefault(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	tmpDir := t.TempDir()
+	oldCfg := cfg
+	oldJsonOutput := jsonOutput
+	defer func() {
+		cfg = oldCfg
+		jsonOutput = oldJsonOutput
+	}()
+	cfg = newTmuxIntegrationTestConfig(tmpDir)
+	jsonOutput = false
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+
+	session := fmt.Sprintf("ntm-test-status-retired-%d", time.Now().UnixNano())
+	defer func() {
+		_ = tmux.KillSession(session)
+	}()
+
+	projectDir := filepath.Join(tmpDir, session)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("failed to create project dir: %v", err)
+	}
+
+	opts := SpawnOptions{
+		Session: session,
+		Agents: []FlatAgent{
+			{Type: AgentTypeClaude, Index: 1, Model: "claude-test"},
+		},
+		CCCount:  1,
+		UserPane: true,
+	}
+	if err := spawnSessionLogicContext(t.Context(), opts); err != nil {
+		t.Fatalf("spawnSessionLogic failed: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	store := assignment.NewStore(session)
+	if _, err := store.Assign("bd-active", "Active work", 1, "claude", "AgentA", "prompt"); err != nil {
+		t.Fatalf("seed active: %v", err)
+	}
+	if _, err := store.Assign("bd-retired", "Retired work", 2, "codex", "AgentB", "prompt"); err != nil {
+		t.Fatalf("seed retired: %v", err)
+	}
+	now := time.Now().UTC()
+	store.Assignments["bd-retired"].Status = assignment.StatusRetired
+	store.Assignments["bd-retired"].RetiredAt = &now
+	store.Assignments["bd-retired"].RetiredReason = "tracker status closed"
+	if err := store.Save(); err != nil {
+		t.Fatalf("save fixture: %v", err)
+	}
+
+	// 1. Default status response (showAssignments = true, no filter)
+	defaultResp, err := buildStatusResponse(t.Context(), session, statusOptions{showAssignments: true, filterPane: -1})
+	if err != nil {
+		t.Fatalf("buildStatusResponse default: %v", err)
+	}
+	if len(defaultResp.Assignments) != 1 || defaultResp.Assignments[0].BeadID != "bd-active" {
+		t.Fatalf("default assignments = %+v, want only active bd-active", defaultResp.Assignments)
+	}
+	if defaultResp.AssignmentStats == nil || defaultResp.AssignmentStats.Total != 1 {
+		t.Fatalf("default assignment stats = %+v, want total 1", defaultResp.AssignmentStats)
+	}
+
+	// 2. Filter --status=retired includes the retired row
+	retiredResp, err := buildStatusResponse(t.Context(), session, statusOptions{showAssignments: true, filterStatus: "retired", filterPane: -1})
+	if err != nil {
+		t.Fatalf("buildStatusResponse retired: %v", err)
+	}
+	if len(retiredResp.Assignments) != 1 || retiredResp.Assignments[0].BeadID != "bd-retired" {
+		t.Fatalf("retired filter assignments = %+v, want bd-retired", retiredResp.Assignments)
+	}
+
+	// 3. Filter --status=all includes both rows
+	allResp, err := buildStatusResponse(t.Context(), session, statusOptions{showAssignments: true, filterStatus: "all", filterPane: -1})
+	if err != nil {
+		t.Fatalf("buildStatusResponse all: %v", err)
+	}
+	if len(allResp.Assignments) != 2 {
+		t.Fatalf("all filter assignments = %+v, want 2 rows", allResp.Assignments)
+	}
+
+	// 4. Text status surface
+	var buf bytes.Buffer
+	if err := runStatusOnce(t.Context(), &buf, session, statusOptions{showAssignments: true, filterPane: -1}); err != nil {
+		t.Fatalf("runStatusOnce default: %v", err)
+	}
+	text := buf.String()
+	if !strings.Contains(text, "bd-active") {
+		t.Fatalf("default text output missing bd-active: %s", text)
+	}
+	if strings.Contains(text, "bd-retired") {
+		t.Fatalf("default text output unexpectedly contained bd-retired: %s", text)
+	}
+
+	// 5. Text status surface with --status=retired
+	buf.Reset()
+	if err := runStatusOnce(t.Context(), &buf, session, statusOptions{showAssignments: true, filterStatus: "retired", filterPane: -1}); err != nil {
+		t.Fatalf("runStatusOnce retired: %v", err)
+	}
+	retiredText := buf.String()
+	if !strings.Contains(retiredText, "bd-retired") {
+		t.Fatalf("retired text output missing bd-retired: %s", retiredText)
+	}
+	if strings.Contains(retiredText, "bd-active") {
+		t.Fatalf("retired text output unexpectedly contained bd-active: %s", retiredText)
 	}
 }
