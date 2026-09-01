@@ -1,9 +1,11 @@
 package robot
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +188,30 @@ func TestApplyFrozenVerdict_NilDetectorIsNoOp(t *testing.T) {
 	}
 	if !workStatus.IsWorking {
 		t.Fatalf("IsWorking flipped to false with nil detector; the no-op must preserve the workStatus")
+	}
+}
+
+// TestPaneWorkStatus_FrozenOnJSONSurface is the JSON-level guard for
+// criterion 3 (bd-3b9): the frozen state must be visible on the robot
+// surface the tick reads. The tick consumes JSON, not Go structs, so a
+// struct field that exists but is not serialized would be invisible to
+// the held-claim actor. The assertion re-encodes a frozen workStatus
+// and looks for the is_frozen token in the output; if the JSON tag is
+// removed or renamed (the surface mutation the brief calls out), the
+// token disappears and the test fails.
+func TestPaneWorkStatus_FrozenOnJSONSurface(t *testing.T) {
+	work := PaneWorkStatus{
+		AgentType:      "claude",
+		IsFrozen:       true,
+		Recommendation: string(agent.RecommendFrozen),
+		IndicatorBasis: "frozen_pane",
+	}
+	encoded, err := json.Marshal(work)
+	if err != nil {
+		t.Fatalf("json.Marshal(PaneWorkStatus) failed: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"is_frozen":true`) {
+		t.Fatalf("PaneWorkStatus JSON does not include is_frozen=true; got %s", string(encoded))
 	}
 }
 
