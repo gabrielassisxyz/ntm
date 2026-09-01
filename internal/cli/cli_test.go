@@ -3319,6 +3319,16 @@ func TestSharedDryRunAndVerboseHelpMentionsCurrentCommands(t *testing.T) {
 	}
 }
 
+func TestRobotAttentionHelpDocumentsResilienceMonitorDetections(t *testing.T) {
+	attentionFlag := rootCmd.Flags().Lookup("robot-attention")
+	if attentionFlag == nil {
+		t.Fatal("expected --robot-attention flag to be registered")
+	}
+	if !strings.Contains(attentionFlag.Usage, "resilience monitor detections") {
+		t.Fatalf("--robot-attention usage = %q, want resilience monitor subscription guidance", attentionFlag.Usage)
+	}
+}
+
 // sessionAutoSelectPossible returns true if the CLI would auto-select a session.
 // This happens when exactly one tmux session is running.
 func sessionAutoSelectPossible() bool {

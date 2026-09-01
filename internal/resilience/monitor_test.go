@@ -1,9 +1,11 @@
 package resilience
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/health"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
 // saveHooks saves all original hooks and returns a restore function.
@@ -24,6 +27,8 @@ func saveHooks() func() {
 	origCheckSession := checkSessionFn
 	origDisplayMessage := displayMessageFn
 	origIsChildAlive := isChildAliveFn
+	origAppendAttentionEvent := appendResilienceMonitorAttentionEventFn
+	appendResilienceMonitorAttentionEventFn = func(state.StoredAttentionEvent) error { return nil }
 	hooksMu.Unlock()
 
 	return func() {
@@ -34,6 +39,7 @@ func saveHooks() func() {
 		checkSessionFn = origCheckSession
 		displayMessageFn = origDisplayMessage
 		isChildAliveFn = origIsChildAlive
+		appendResilienceMonitorAttentionEventFn = origAppendAttentionEvent
 		hooksMu.Unlock()
 	}
 }
@@ -612,6 +618,114 @@ func TestCheckHealthDetectsRateLimit(t *testing.T) {
 	}
 	if waitSeconds != 60 {
 		t.Errorf("expected wait seconds 60, got %d", waitSeconds)
+	}
+}
+
+func TestCheckHealthPublishesCrashModalAndRateLimitDetections(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var published []state.StoredAttentionEvent
+	setHooksLocked(func() {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "crashed-pane",
+						ShellPID:      111,
+						Status:        health.StatusError,
+						ProcessStatus: health.ProcessExited,
+						Issues:        []health.Issue{{Type: "crash", Message: "agent process exited"}},
+					},
+					{
+						PaneID:        "boot-modal-pane",
+						ShellPID:      222,
+						Status:        health.StatusError,
+						ProcessStatus: health.ProcessExited,
+						Issues:        []health.Issue{{Type: "boot_modal", Message: "agent is waiting at the boot modal"}},
+					},
+					{
+						PaneID:        "rate-limit-pane",
+						Status:        health.StatusWarning,
+						ProcessStatus: health.ProcessRunning,
+						RateLimited:   true,
+						WaitSeconds:   60,
+					},
+				},
+			}, nil
+		}
+		isChildAliveFn = func(pid int) bool { return pid == 222 }
+		displayMessageFn = func(string, string, int) error { return nil }
+		appendResilienceMonitorAttentionEventFn = func(event state.StoredAttentionEvent) error {
+			published = append(published, event)
+			return nil
+		}
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = false
+	cfg.Resilience.CrashThreshold = 1
+	cfg.Resilience.RateLimit.Detect = true
+	m := NewMonitor("observed-session", t.TempDir(), cfg, false)
+	m.RegisterAgent("crashed-pane", 1, 111, "cod", "", "codex")
+	m.RegisterAgent("boot-modal-pane", 2, 222, "cc", "", "claude")
+	m.RegisterAgent("rate-limit-pane", 3, 0, "agy", "", "agy")
+
+	m.checkHealth(context.Background())
+	m.wg.Wait()
+
+	byReason := make(map[string]state.StoredAttentionEvent, len(published))
+	for _, event := range published {
+		byReason[event.ReasonCode] = event
+	}
+	for reason, expected := range map[string]struct {
+		eventType string
+		pane      string
+		severity  state.Severity
+	}{
+		"agent_crashed":             {eventType: "agent_error", pane: "1", severity: state.SeverityError},
+		"crash_handling_suppressed": {eventType: "alert_warning", pane: "2", severity: state.SeverityWarning},
+		"agent_rate_limited":        {eventType: "alert_warning", pane: "3", severity: state.SeverityWarning},
+	} {
+		event, ok := byReason[reason]
+		if !ok {
+			t.Fatalf("missing durable attention event for %s; got %#v", reason, published)
+		}
+		if event.SessionName != "observed-session" || event.Pane != expected.pane || event.EventType != expected.eventType || event.Severity != expected.severity {
+			t.Errorf("event for %s = %+v, want session observed-session pane %s type %s severity %s", reason, event, expected.pane, expected.eventType, expected.severity)
+		}
+		if event.Source != "resilience.monitor" || event.Actionability != state.ActionabilityActionRequired {
+			t.Errorf("event for %s is not subscribable attention data: %+v", reason, event)
+		}
+	}
+}
+
+func TestMonitorDetectionLogIncludesSessionTag(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+	setHooksLocked(func() {
+		displayMessageFn = func(string, string, int) error { return nil }
+	})
+
+	cfg := config.Default()
+	m := NewMonitor("session-in-log", t.TempDir(), cfg, false)
+	m.RegisterAgent("pane-1", 1, 0, "cc", "", "claude")
+	m.handleRateLimit(m.agents["pane-1"], 60)
+	m.wg.Wait()
+
+	if got := output.String(); !strings.Contains(got, "session=session-in-log detection=rate_limit pane=pane-1") {
+		t.Fatalf("monitor log = %q, want a session-tagged rate-limit detection", got)
 	}
 }
 

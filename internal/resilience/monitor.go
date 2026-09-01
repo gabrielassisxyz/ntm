@@ -3,6 +3,7 @@ package resilience
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -16,19 +17,21 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/notify"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // Overridable hooks for tests.
 // Protected by hooksMu for concurrent access from spawned goroutines.
 var (
-	hooksMu          sync.RWMutex
-	sendKeysFn       = tmux.SendKeys
-	buildPaneCmdFn   = tmux.BuildPaneCommand
-	sleepFn          = time.Sleep
-	checkSessionFn   = health.CheckSession
-	displayMessageFn = tmux.DisplayMessage
-	isChildAliveFn   = process.IsChildAlive
+	hooksMu                                 sync.RWMutex
+	sendKeysFn                              = tmux.SendKeys
+	buildPaneCmdFn                          = tmux.BuildPaneCommand
+	sleepFn                                 = time.Sleep
+	checkSessionFn                          = health.CheckSession
+	displayMessageFn                        = tmux.DisplayMessage
+	isChildAliveFn                          = process.IsChildAlive
+	appendResilienceMonitorAttentionEventFn = appendResilienceMonitorAttentionEvent
 )
 
 // AgentState tracks the state of an individual agent for restart purposes
@@ -95,6 +98,74 @@ func NewMonitor(session, projectDir string, cfg *config.Config, autoRestart bool
 		autoRestart:      autoRestart,
 		agents:           make(map[string]*AgentState),
 	}
+}
+
+// recordAttentionDetection makes a resilience verdict visible outside the detached
+// monitor process. The event bus remains useful for in-process webhooks, but a robot
+// command runs in another process and therefore needs the durable attention journal.
+func (m *Monitor) recordAttentionDetection(eventType, reasonCode string, agentState *AgentState, severity state.Severity, summary string, details map[string]any) {
+	if agentState == nil {
+		return
+	}
+	if details == nil {
+		details = make(map[string]any)
+	}
+	details["session"] = m.session
+	details["pane_id"] = agentState.PaneID
+	details["pane_index"] = agentState.PaneIndex
+	details["agent_type"] = agentState.AgentType
+
+	detailsJSON, err := json.Marshal(details)
+	if err != nil {
+		log.Printf("[resilience] session=%s could not encode %s detection details: %v", m.session, reasonCode, err)
+		return
+	}
+	nextActionsJSON, err := json.Marshal([]map[string]string{{
+		"action": "robot-tail",
+		"args":   fmt.Sprintf("--robot-tail=%s --panes=%d --lines=50", m.session, agentState.PaneIndex),
+		"reason": "Inspect the monitored agent output",
+	}})
+	if err != nil {
+		log.Printf("[resilience] session=%s could not encode %s detection actions: %v", m.session, reasonCode, err)
+		return
+	}
+
+	event := state.StoredAttentionEvent{
+		Ts:            time.Now().UTC(),
+		SessionName:   m.session,
+		Pane:          fmt.Sprintf("%d", agentState.PaneIndex),
+		Category:      "alert",
+		EventType:     eventType,
+		Source:        "resilience.monitor",
+		Actionability: state.ActionabilityActionRequired,
+		Severity:      severity,
+		ReasonCode:    reasonCode,
+		Summary:       summary,
+		Details:       string(detailsJSON),
+		NextActions:   string(nextActionsJSON),
+		DedupKey:      fmt.Sprintf("resilience.monitor:%s:%s:%s", m.session, agentState.PaneID, reasonCode),
+		DedupCount:    1,
+	}
+
+	hooksMu.RLock()
+	appendEvent := appendResilienceMonitorAttentionEventFn
+	hooksMu.RUnlock()
+	if err := appendEvent(event); err != nil {
+		log.Printf("[resilience] session=%s could not publish %s detection: %v", m.session, reasonCode, err)
+	}
+}
+
+func appendResilienceMonitorAttentionEvent(event state.StoredAttentionEvent) error {
+	store, err := state.Open("")
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.Migrate(); err != nil {
+		return err
+	}
+	_, err = store.AppendAttentionEvent(&event)
+	return err
 }
 
 // SetCodexThrottle attaches a CodexThrottle to the monitor so that
@@ -545,8 +616,16 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 // about a session, and it was previously visible only as a line in a text log that no
 // tool consumes.
 func (m *Monitor) handleSuppression(agentState *AgentState, guard, detail string) {
-	log.Printf("[resilience] Agent %s: %s — skipping crash handling (%s guard)",
-		agentState.PaneID, detail, guard)
+	log.Printf("[resilience] session=%s detection=crash_suppressed pane=%s: %s (%s guard)",
+		m.session, agentState.PaneID, detail, guard)
+	m.recordAttentionDetection(
+		"alert_warning",
+		"crash_handling_suppressed",
+		agentState,
+		state.SeverityWarning,
+		"crash handling suppressed by "+guard+" guard",
+		map[string]any{"guard": guard, "detail": detail},
+	)
 
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
 		events.WebhookHealthDegraded,
@@ -568,8 +647,16 @@ func (m *Monitor) handleRateLimit(agentState *AgentState, waitSeconds int) {
 	agentState.LastRateLimitTime = time.Now()
 	agentState.WaitSeconds = waitSeconds
 
-	log.Printf("[resilience] Agent %s (pane %d, type %s) hit rate limit (wait %ds)",
-		agentState.PaneID, agentState.PaneIndex, agentState.AgentType, waitSeconds)
+	log.Printf("[resilience] session=%s detection=rate_limit pane=%s type=%s wait=%ds",
+		m.session, agentState.PaneID, agentState.AgentType, waitSeconds)
+	m.recordAttentionDetection(
+		"alert_warning",
+		"agent_rate_limited",
+		agentState,
+		state.SeverityWarning,
+		fmt.Sprintf("%s agent hit a rate limit", agentState.AgentType),
+		map[string]any{"wait_seconds": waitSeconds},
+	)
 
 	// Propagate to Codex throttle for cod agents (bd-3qoly)
 	if agent.AgentType(agentState.AgentType).Canonical() == agent.AgentTypeCodex {
@@ -763,8 +850,16 @@ func (m *Monitor) handleCrash(ctx context.Context, agent *AgentState, reason str
 	agent.Healthy = false
 	agent.LastCrash = time.Now()
 
-	log.Printf("[resilience] Agent %s (pane %d, type %s) crashed: %s",
-		agent.PaneID, agent.PaneIndex, agent.AgentType, reason)
+	log.Printf("[resilience] session=%s detection=agent_crashed pane=%s type=%s: %s",
+		m.session, agent.PaneID, agent.AgentType, reason)
+	m.recordAttentionDetection(
+		"agent_error",
+		"agent_crashed",
+		agent,
+		state.SeverityError,
+		fmt.Sprintf("%s agent crashed: %s", agent.AgentType, reason),
+		map[string]any{"reason": reason},
+	)
 
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
 		events.WebhookAgentCrashed,
