@@ -138,6 +138,8 @@ func defaultPatterns() []Pattern {
 		{Name: "provider_quota_modal", RegexStr: `(?i)(?:hit|reached)\s+your\s+(?:usage\s+)?limit.*(?:upgrade|switch\s+to|press\s+enter|confirm|esc\s+to)`, Agent: "*", State: StateModal, Category: CategoryModal, Priority: 225, Description: "Provider quota / upgrade / model switch modal"},
 		{Name: "model_switch_confirm_modal", RegexStr: `(?i)(?:switch\s+to|upgrade\s+to).*(?:press\s+enter\s+to\s+confirm|esc\s+to\s+cancel)`, Agent: "*", State: StateModal, Category: CategoryModal, Priority: 220, Description: "Model switch or upgrade confirmation modal"},
 		{Name: "press_enter_confirm_modal", RegexStr: `(?i)press\s+enter\s+to\s+confirm\b`, Agent: "*", State: StateModal, Category: CategoryModal, Priority: 215, Description: "Press enter to confirm modal prompt"},
+		{Name: "codex_hooks_trust_modal", RegexStr: `(?is)review\s+hooks.*trust\s+all\s+and\s+continue`, Agent: "codex", State: StateModal, Category: CategoryModal, Priority: 240, Description: "Codex hooks trust confirmation dialog"},
+		{Name: "agy_feedback_prompt_modal", RegexStr: `(?is)how['’]s\s+the\s+cli\s+experience\s+so\s+far\?.*help\s+us\s+improve:.*\[\s*1\s*\]\s*good.*\[\s*2\s*\]\s*fine.*\[\s*3\s*\]\s*bad.*\[\s*0\s*\]\s*skip`, Agent: "antigravity", State: StateModal, Category: CategoryModal, Priority: 235, Description: "Antigravity CLI feedback survey prompt"},
 
 		// Antigravity (agy) first-run workspace-trust dialog: the pane is
 		// alive but permanently stalled on a menu waiting for a keystroke.

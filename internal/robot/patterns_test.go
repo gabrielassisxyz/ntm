@@ -1101,12 +1101,12 @@ func TestAgyTrustPromptClassifiesAsError(t *testing.T) {
 
 func TestModalPatterns_CodexAndProviderModals(t *testing.T) {
 	tests := []struct {
-		name       string
-		content    string
-		agentType  string
-		wantMatch  string
-		wantCat    PatternCategory
-		wantState  AgentState
+		name      string
+		content   string
+		agentType string
+		wantMatch string
+		wantCat   PatternCategory
+		wantState AgentState
 	}{
 		{
 			name:      "codex usage limit modal verbatim",
@@ -1148,6 +1148,24 @@ func TestModalPatterns_CodexAndProviderModals(t *testing.T) {
 			wantCat:   CategoryModal,
 			wantState: StateModal,
 		},
+		{
+			name: "codex hooks trust dialog",
+			content: "Review hooks\n" +
+				"Trust all and continue",
+			agentType: "codex",
+			wantMatch: "codex_hooks_trust_modal",
+			wantCat:   CategoryModal,
+			wantState: StateModal,
+		},
+		{
+			name: "agy feedback prompt",
+			content: "How's the CLI experience so far? Help us improve: [1] Good  [2] Fine  [3] Bad  [0] Skip\n" +
+				"? for shortcuts ... Gemini 3.7 Flash · high",
+			agentType: "agy",
+			wantMatch: "agy_feedback_prompt_modal",
+			wantCat:   CategoryModal,
+			wantState: StateModal,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1168,6 +1186,9 @@ func TestModalPatterns_CodexAndProviderModals(t *testing.T) {
 			}
 			if matched.State != tt.wantState {
 				t.Errorf("state = %q, want %q", matched.State, tt.wantState)
+			}
+			if matched.Priority <= 200 {
+				t.Errorf("priority = %d, want above generic error priority 200", matched.Priority)
 			}
 			if !HasModalPattern(tt.content, tt.agentType) {
 				t.Errorf("HasModalPattern(%q, %q) = false, want true", tt.content, tt.agentType)

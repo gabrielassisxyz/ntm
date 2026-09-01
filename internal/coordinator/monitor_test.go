@@ -252,23 +252,44 @@ func TestGetAssignmentCandidates_SkipsErroredAgent(t *testing.T) {
 }
 
 // TestResultFromPaneObservation_ModalPaneNotDispatchable verifies that a pane
-// on a live quota/upgrade modal is classified as StateModal and is not safe to dispatch.
+// on a live modal is classified as StateModal and is not safe to dispatch.
 func TestResultFromPaneObservation_ModalPaneNotDispatchable(t *testing.T) {
 	m := NewAgentMonitor("test-session", nil, t.TempDir())
 
-	modalFixture := "You've hit your usage limit. Upgrade to Pro ( 1. Switch to... Fast and affordable ... Press enter to confirm"
-	obs := paneObservation("%1", "codex", status.StateIdle, modalFixture)
-
-	result := m.resultFromPaneObservation(obs)
-
-	if result.Status != robot.StateModal {
-		t.Fatalf("result.Status = %s, want %s (StateModal)", result.Status, robot.StateModal)
+	tests := []struct {
+		name      string
+		agentType string
+		fixture   string
+	}{
+		{
+			name:      "codex hooks trust dialog",
+			agentType: "codex",
+			fixture: "Review hooks\n" +
+				"Trust all and continue",
+		},
+		{
+			name:      "agy feedback prompt",
+			agentType: "agy",
+			fixture: "How's the CLI experience so far? Help us improve: [1] Good  [2] Fine  [3] Bad  [0] Skip\n" +
+				"? for shortcuts ... Gemini 3.7 Flash · high",
+		},
 	}
-	if result.SafeToDispatch {
-		t.Fatalf("result.SafeToDispatch = true, want false for modal pane")
-	}
-	if result.Healthy {
-		t.Fatalf("result.Healthy = true, want false for modal pane")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obs := paneObservation("%1", tt.agentType, status.StateIdle, tt.fixture)
+			result := m.resultFromPaneObservation(obs)
+
+			if result.Status != robot.StateModal {
+				t.Fatalf("result.Status = %s, want %s (StateModal)", result.Status, robot.StateModal)
+			}
+			if result.SafeToDispatch {
+				t.Fatalf("result.SafeToDispatch = true, want false for modal pane")
+			}
+			if result.Healthy {
+				t.Fatalf("result.Healthy = true, want false for modal pane")
+			}
+		})
 	}
 }
 
