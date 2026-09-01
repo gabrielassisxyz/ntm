@@ -19,9 +19,8 @@
 //     Consume) over the state.db approvals table. The two-person rule is
 //     enforced ONLY when the approval record has RequiresSLB=true.
 //   - Decision CLI: `ntm approve ...` (internal/cli/approve.go). Approver
-//     identity = NTM_USER || USER env (getCurrentApprover) — i.e.
-//     caller-asserted, not authenticated (known limitation, out of scope
-//     for bd-2y2on).
+//     identity = --as || AGENT_NAME || NTM_USER || USER — i.e.
+//     caller-asserted, not authenticated.
 //   - Enforcement: `ntm locks force-release` is gated
 //     (internal/cli/force_release_gate.go, wired into runForceRelease in
 //     internal/cli/locks.go). This was the P1 gap bd-2y2on: previously the
@@ -170,7 +169,7 @@ func (e *slbApprovalEnv) runNTM(t *testing.T, logger *TestLogger, approver strin
 
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = e.projectDir
-	cmd.Env = append(baseEnvWithout("HOME", "NTM_CONFIG", "NTM_USER", "PATH", "XDG_CONFIG_HOME", "NTM_TMUX_BINARY"),
+	cmd.Env = append(baseEnvWithout("AGENT_NAME", "HOME", "NTM_CONFIG", "NTM_USER", "PATH", "XDG_CONFIG_HOME", "NTM_TMUX_BINARY"),
 		"HOME="+e.home,
 		"NTM_CONFIG="+filepath.Join(e.cfgDir, "config.toml"),
 		"NTM_USER="+approver,

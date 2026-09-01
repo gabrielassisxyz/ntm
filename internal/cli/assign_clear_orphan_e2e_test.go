@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,71 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
+
+func TestAssignReconcileRetiresClosedTrackerBeadEndToEnd(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	realBR, err := exec.LookPath("br")
+	if err != nil {
+		t.Skip("br is required for assignment reconciliation coverage")
+	}
+
+	projectDir := t.TempDir()
+	for _, args := range [][]string{{"init", "--quiet"}, {"create", "--title", "Reconcile closed work", "--type", "task", "--priority", "2", "--json"}} {
+		command := exec.Command(realBR, args...)
+		command.Dir = projectDir
+		if output, runErr := command.CombinedOutput(); runErr != nil {
+			t.Fatalf("br %s: %v\n%s", strings.Join(args, " "), runErr, output)
+		} else if len(args) > 0 && args[0] == "create" {
+			var created struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(output, &created); err != nil || created.ID == "" {
+				t.Fatalf("parse br create output: err=%v output=%s", err, output)
+			}
+			beadID := created.ID
+			claim := exec.Command(realBR, "update", beadID, "--assignee", "CobaltLake", "--status", "in_progress")
+			claim.Dir = projectDir
+			if claimOutput, claimErr := claim.CombinedOutput(); claimErr != nil {
+				t.Fatalf("claim scratch bead: %v\n%s", claimErr, claimOutput)
+			}
+
+			const session = "reconcile-closed-e2e"
+			store := assignment.NewStore(session)
+			if _, err := store.Assign(beadID, "Reconcile closed work", 1, "codex", "CobaltLake", "work"); err != nil {
+				t.Fatalf("seed durable assignment: %v", err)
+			}
+			store.Assignments[beadID].ClaimActor = "CobaltLake"
+			if err := store.Save(); err != nil {
+				t.Fatalf("save durable assignment: %v", err)
+			}
+
+			close := exec.Command(realBR, "close", beadID, "--reason", "completed in scratch session")
+			close.Dir = projectDir
+			if closeOutput, closeErr := close.CombinedOutput(); closeErr != nil {
+				t.Fatalf("close scratch bead: %v\n%s", closeErr, closeOutput)
+			}
+
+			var output bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetContext(t.Context())
+			cmd.SetOut(&output)
+			if err := runReconcileAssignments(cmd, session, projectDir); err != nil {
+				t.Fatalf("reconcile closed assignment: %v", err)
+			}
+			if !strings.Contains(output.String(), "retired 1 stale assignment") {
+				t.Fatalf("reconcile output=%q", output.String())
+			}
+			retired, err := assignment.LoadStoreStrict(session)
+			if err != nil {
+				t.Fatalf("load reconciled assignment store: %v", err)
+			}
+			row := retired.Get(beadID)
+			if row == nil || row.Status != assignment.StatusRetired || row.RetiredAt == nil {
+				t.Fatalf("closed tracker row was not durably retired: %+v", row)
+			}
+		}
+	}
+}
 
 // TestAssignClearRecoversOrphanedClaimEndToEnd scripts the bd-1zn
 // reproduction against a real scratch Beads tracker: ntm's real claim port

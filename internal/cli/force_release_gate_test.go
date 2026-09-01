@@ -104,6 +104,124 @@ func TestForceReleaseGateAuto(t *testing.T) {
 	}
 }
 
+func TestSLBApprovalIdentityUsesAgentOrExplicitIdentityBeforeSharedLogin(t *testing.T) {
+	t.Setenv("USER", "shared-login")
+	t.Setenv("NTM_USER", "shared-login")
+	t.Setenv("AGENT_NAME", "requesting-agent")
+
+	if got := resolveSLBApprovalIdentity(""); got != "requesting-agent" {
+		t.Fatalf("agent identity = %q, want requesting-agent", got)
+	}
+	t.Setenv("AGENT_NAME", "")
+	if got := resolveSLBApprovalIdentity(""); got != "shared-login" {
+		t.Fatalf("fallback identity = %q, want shared-login", got)
+	}
+	t.Setenv("AGENT_NAME", "requesting-agent")
+	if got := resolveSLBApprovalIdentity("human-operator"); got != "human-operator" {
+		t.Fatalf("explicit identity = %q, want human-operator", got)
+	}
+
+	engine, _ := newGateFixture(t)
+	request, err := engine.Request(t.Context(), approval.RequestParams{
+		Action:      "force_release",
+		Resource:    "reservation #861",
+		RequestedBy: resolveSLBApprovalIdentity(""),
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if request.RequestedBy != "requesting-agent" {
+		t.Fatalf("requester = %q, want requesting-agent", request.RequestedBy)
+	}
+
+	t.Setenv("AGENT_NAME", "approving-agent")
+	if err := engine.Approve(t.Context(), request.ID, resolveSLBApprovalIdentity("")); err != nil {
+		t.Fatalf("different agent under same login should approve: %v", err)
+	}
+
+	// Human operator using explicit --as under the same login also succeeds.
+	requestHuman, err := engine.Request(t.Context(), approval.RequestParams{
+		Action:      "force_release",
+		Resource:    "reservation #863",
+		RequestedBy: "requesting-agent",
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("create requestHuman: %v", err)
+	}
+	if err := engine.Approve(t.Context(), requestHuman.ID, resolveSLBApprovalIdentity("human-operator")); err != nil {
+		t.Fatalf("human --as operator under same login should approve: %v", err)
+	}
+
+	second, err := engine.Request(t.Context(), approval.RequestParams{
+		Action:      "force_release",
+		Resource:    "reservation #862",
+		RequestedBy: "requesting-agent",
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("create second request: %v", err)
+	}
+	if err := engine.Approve(t.Context(), second.ID, "requesting-agent"); err == nil {
+		t.Fatal("same agent identity must remain unable to self-approve")
+	}
+}
+
+func TestSingleLoginDeadlockResolved(t *testing.T) {
+	// On a single-login machine, all processes share USER=gabriel.
+	t.Setenv("USER", "gabriel")
+	t.Setenv("NTM_USER", "")
+
+	// 1. An agent session creates an approval request for an orphaned reservation.
+	t.Setenv("AGENT_NAME", "agent-worker-pane")
+	engine, _ := newGateFixture(t)
+	req, err := engine.Request(t.Context(), approval.RequestParams{
+		Action:      "force_release",
+		Resource:    "reservation #861",
+		RequestedBy: resolveSLBApprovalIdentity(""),
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("create agent request: %v", err)
+	}
+	if req.RequestedBy != "agent-worker-pane" {
+		t.Fatalf("requester = %q, want agent-worker-pane", req.RequestedBy)
+	}
+
+	// 2. The human operator at the keyboard (where AGENT_NAME is unset, same OS user)
+	// approves the request.
+	t.Setenv("AGENT_NAME", "")
+	approverIdentity := resolveSLBApprovalIdentity("")
+	if approverIdentity != "gabriel" {
+		t.Fatalf("approver identity = %q, want OS user gabriel", approverIdentity)
+	}
+	if err := engine.Approve(t.Context(), req.ID, approverIdentity); err != nil {
+		t.Fatalf("human operator on same login should be able to approve agent request: %v", err)
+	}
+
+	// 3. Self-approval by the same agent session remains blocked.
+	req2, err := engine.Request(t.Context(), approval.RequestParams{
+		Action:      "force_release",
+		Resource:    "reservation #862",
+		RequestedBy: "agent-worker-pane",
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("create second request: %v", err)
+	}
+	t.Setenv("AGENT_NAME", "agent-worker-pane")
+	if err := engine.Approve(t.Context(), req2.ID, resolveSLBApprovalIdentity("")); err == nil {
+		t.Fatal("same agent identity must be prevented from self-approving")
+	}
+}
+
+func TestApproveCommandExposesExplicitIdentityFlag(t *testing.T) {
+	if flag := newApproveCmd().PersistentFlags().Lookup("as"); flag == nil {
+		t.Fatal("approve command must expose --as for an explicit human identity")
+	}
+}
+
 // TestForceReleaseGateApprovalLifecycle walks one operation key through the
 // full approval x record-state table:
 //
