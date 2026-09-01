@@ -5,6 +5,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 )
 
 // init wires the robot restart engine to the gated Agent Mail registration
@@ -39,19 +40,24 @@ func registerRelaunchedPanes(ctx context.Context, session string, panes []robot.
 		return
 	}
 	registerSessionAgent(ctx, session, dir)
-	_ = registerSpawnedAgents(ctx, dir, session, relaunchRegistrationInputs(panes))
+	_ = registerSpawnedAgents(ctx, dir, session, relaunchRegistrationInputs(panes, session))
 }
 
 // relaunchRegistrationInputs translates restarted panes into the exact
 // registration input used by spawn, add, and adopt. A relaunch does not know
 // the resolved model, so the title-parsed variant stands in; the canonical
 // pane ID and title are what the registry keys on for identity reuse.
-func relaunchRegistrationInputs(panes []robot.RestartedAgentPane) []spawnedAgentInfo {
+func relaunchRegistrationInputs(panes []robot.RestartedAgentPane, sessionName string) []spawnedAgentInfo {
 	agents := make([]spawnedAgentInfo, 0, len(panes))
 	for _, pane := range panes {
+		// The restarted pane keeps the identity the original spawn gave it
+		// (bd-yf3); without it the registration guard in
+		// registerSpawnedAgents would skip the relaunch registration.
+		agentName := swarm.DerivePaneAgentName(sessionName, pane.PaneIndex+1)
 		agents = append(agents, spawnedAgentInfo{
 			paneIndex: pane.PaneIndex,
 			paneID:    pane.PaneID,
+			agentName: agentName,
 			paneTitle: pane.PaneTitle,
 			agentType: pane.AgentType,
 			model:     pane.Variant,

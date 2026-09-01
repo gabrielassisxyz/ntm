@@ -1037,6 +1037,14 @@ func CreateSessionWithHistoryLimitContext(ctx context.Context, name, directory s
 	return DefaultClient.CreateSessionWithHistoryLimitContext(ctx, name, directory, historyLimit)
 }
 
+// CreateSessionWithEnvContext creates a tmux session with session-scoped and
+// pane-scoped environment variables (default client). Mirrors the
+// (*Client).CreateSessionWithEnvContext method for callers that don't keep a
+// reference to a Client (the CLI layer).
+func CreateSessionWithEnvContext(ctx context.Context, name, directory string, historyLimit int, sessionEnv, paneEnv map[string]string) error {
+	return DefaultClient.CreateSessionWithEnvContext(ctx, name, directory, historyLimit, sessionEnv, paneEnv)
+}
+
 // GetPanes returns all panes in a session
 func (c *Client) GetPanes(session string) ([]Pane, error) {
 	return c.GetPanesContext(context.Background(), session)
@@ -1500,6 +1508,13 @@ func SplitWindow(session string, directory string) (string, error) {
 // default client.
 func SplitWindowContext(ctx context.Context, session string, directory string) (string, error) {
 	return DefaultClient.SplitWindowContext(ctx, session, directory)
+}
+
+// SplitWindowWithEnvContext creates a new pane with pane-scoped environment
+// variables (default client). Mirrors (*Client).SplitWindowWithEnvContext for
+// callers that don't keep a reference to a Client (the CLI layer).
+func SplitWindowWithEnvContext(ctx context.Context, session string, directory string, paneEnv map[string]string) (string, error) {
+	return DefaultClient.SplitWindowWithEnvContext(ctx, session, directory, paneEnv)
 }
 
 // SetPaneTitle sets the title of a pane and disables title changes by programs

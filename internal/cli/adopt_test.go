@@ -106,7 +106,7 @@ func TestAdoptedAgentMailRegistrations(t *testing.T) {
 	}
 
 	t.Run("auto named panes use their persisted title", func(t *testing.T) {
-		got := adoptedAgentMailRegistrations(adopted, true)
+		got := adoptedAgentMailRegistrations(adopted, true, "demo")
 		if len(got) != 2 {
 			t.Fatalf("registrations = %d, want 2 non-user panes", len(got))
 		}
@@ -119,7 +119,7 @@ func TestAdoptedAgentMailRegistrations(t *testing.T) {
 	})
 
 	t.Run("without rename, registry uses the live pane title", func(t *testing.T) {
-		got := adoptedAgentMailRegistrations(adopted[:1], false)
+		got := adoptedAgentMailRegistrations(adopted[:1], false, "demo")
 		if len(got) != 1 || got[0].paneTitle != "external-claude" {
 			t.Fatalf("registrations = %+v, want original live title", got)
 		}
