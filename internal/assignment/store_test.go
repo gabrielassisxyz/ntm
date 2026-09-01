@@ -191,6 +191,79 @@ func TestListActive(t *testing.T) {
 	}
 }
 
+func TestReconcileTrackerRetiresOnlyTerminalOrReleasedAssignments(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	store := NewStore("tracker-reconciliation")
+	for beadID, actor := range map[string]string{
+		"bd-closed":   "CobaltLake",
+		"bd-released": "CobaltLake",
+		"bd-live":     "CobaltLake",
+		"bd-unknown":  "CobaltLake",
+	} {
+		if _, err := store.Assign(beadID, beadID+" title", 1, "codex", actor, "work"); err != nil {
+			t.Fatalf("seed %s: %v", beadID, err)
+		}
+		store.Assignments[beadID].ClaimActor = actor
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("save fixture: %v", err)
+	}
+
+	states := map[string]TrackerAssignmentState{
+		"bd-closed":   {Status: "closed", Assignee: "CobaltLake"},
+		"bd-released": {Status: "open"},
+		"bd-live":     {Status: "in_progress", Assignee: "CobaltLake"},
+		"bd-unknown":  {Status: "unknown"},
+	}
+	result, err := store.ReconcileTracker(t.Context(), func(_ context.Context, beadID string) (TrackerAssignmentState, error) {
+		return states[beadID], nil
+	})
+	if err != nil {
+		t.Fatalf("ReconcileTracker: %v", err)
+	}
+	if got := len(result.Retired); got != 2 {
+		t.Fatalf("retired=%d, want 2 (%+v)", got, result.Retired)
+	}
+	for _, beadID := range []string{"bd-closed", "bd-released"} {
+		row := store.Get(beadID)
+		if row == nil || row.Status != StatusRetired || row.RetiredAt == nil || row.RetiredReason == "" {
+			t.Fatalf("%s retirement=%+v, want durable retired record with timestamp and reason", beadID, row)
+		}
+	}
+	for _, beadID := range []string{"bd-live", "bd-unknown"} {
+		if row := store.Get(beadID); row == nil || row.Status != StatusAssigned || row.RetiredAt != nil {
+			t.Fatalf("%s was retired unexpectedly: %+v", beadID, row)
+		}
+	}
+	if visible := store.ListVisible(); len(visible) != 2 {
+		t.Fatalf("visible assignments=%d, want 2", len(visible))
+	}
+}
+
+func TestReconcileTrackerLeavesLedgerUntouchedWhenTrackerIsUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	store := NewStore("tracker-unavailable")
+	if _, err := store.Assign("bd-live", "Live work", 1, "codex", "CobaltLake", "work"); err != nil {
+		t.Fatalf("seed assignment: %v", err)
+	}
+	before := store.Get("bd-live")
+	result, err := store.ReconcileTracker(t.Context(), func(context.Context, string) (TrackerAssignmentState, error) {
+		return TrackerAssignmentState{}, errors.New("tracker offline")
+	})
+	if err == nil || !strings.Contains(err.Error(), "tracker offline") {
+		t.Fatalf("ReconcileTracker error=%v, want tracker failure", err)
+	}
+	if len(result.Retired) != 0 {
+		t.Fatalf("retired=%+v, want no tracker-unavailable mutations", result.Retired)
+	}
+	after := store.Get("bd-live")
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("tracker-unavailable reconciliation mutated ledger: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestStateTransitions(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)

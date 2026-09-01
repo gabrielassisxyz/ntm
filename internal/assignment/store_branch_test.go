@@ -88,8 +88,8 @@ func TestIsValidTransition_UnknownSource(t *testing.T) {
 func TestIsValidTransition_TerminalStates(t *testing.T) {
 	t.Parallel()
 
-	terminals := []AssignmentStatus{StatusCompleted, StatusReassigned}
-	targets := []AssignmentStatus{StatusAssigned, StatusWorking, StatusCompleted, StatusFailed, StatusReassigned}
+	terminals := []AssignmentStatus{StatusCompleted, StatusReassigned, StatusRetired}
+	targets := []AssignmentStatus{StatusAssigned, StatusWorking, StatusCompleted, StatusFailed, StatusReassigned, StatusRetired}
 
 	for _, from := range terminals {
 		for _, to := range targets {

@@ -63,6 +63,7 @@ const (
 	StatusCompleted  AssignmentStatus = "completed"  // Bead closed successfully
 	StatusFailed     AssignmentStatus = "failed"     // Agent crashed or gave up
 	StatusReassigned AssignmentStatus = "reassigned" // Moved to different agent
+	StatusRetired    AssignmentStatus = "retired"    // Tracker says this durable assignment can no longer produce work
 
 	ClearStateNone                 AssignmentClearState = ""
 	ClearStateReservationReleasing AssignmentClearState = "reservation_releasing"
@@ -81,6 +82,8 @@ type Assignment struct {
 	StartedAt     *time.Time       `json:"started_at,omitempty"` // When agent started working
 	CompletedAt   *time.Time       `json:"completed_at,omitempty"`
 	FailedAt      *time.Time       `json:"failed_at,omitempty"`
+	RetiredAt     *time.Time       `json:"retired_at,omitempty"`
+	RetiredReason string           `json:"retired_reason,omitempty"`
 	FailReason    string           `json:"fail_reason,omitempty"`
 	FailureReason string           `json:"failure_reason,omitempty"` // Detailed failure reason
 	RetryCount    int              `json:"retry_count,omitempty"`    // Number of retry attempts
@@ -180,6 +183,7 @@ func cloneAssignment(a *Assignment) *Assignment {
 	cloned.StartedAt = cloneTimePtr(a.StartedAt)
 	cloned.CompletedAt = cloneTimePtr(a.CompletedAt)
 	cloned.FailedAt = cloneTimePtr(a.FailedAt)
+	cloned.RetiredAt = cloneTimePtr(a.RetiredAt)
 	cloned.ClaimedAt = cloneTimePtr(a.ClaimedAt)
 	cloned.ClaimStartedAt = cloneTimePtr(a.ClaimStartedAt)
 	cloned.ReservationExpiresAt = cloneTimePtr(a.ReservationExpiresAt)
@@ -1020,7 +1024,7 @@ func shouldApplyAssignmentStatusDelta(baseline, latest, current AssignmentStatus
 
 func isTerminalAssignmentStatus(status AssignmentStatus) bool {
 	switch status {
-	case StatusCompleted, StatusFailed, StatusReassigned:
+	case StatusCompleted, StatusFailed, StatusReassigned, StatusRetired:
 		return true
 	default:
 		return false
@@ -1168,6 +1172,156 @@ func (s *AssignmentStore) ListActive() []*Assignment {
 		}
 	}
 	return result
+}
+
+// ListVisible returns assignments suitable for default status surfaces. Retired
+// rows remain durable history, but no longer represent work that can run.
+func (s *AssignmentStore) ListVisible() []*Assignment {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	result := make([]*Assignment, 0, len(s.Assignments))
+	for _, a := range s.Assignments {
+		if a.Status != StatusRetired {
+			result = append(result, cloneAssignment(a))
+		}
+	}
+	return result
+}
+
+// TrackerAssignmentState is the minimum tracker evidence needed to decide
+// whether a durable assignment can still produce work.
+type TrackerAssignmentState struct {
+	Status   string
+	Assignee string
+}
+
+// TrackerAssignmentLookup reads one assignment's current tracker state.
+// Reconciliation does every read before it mutates the ledger, so an
+// unreachable tracker cannot be mistaken for every assignment being closed.
+type TrackerAssignmentLookup func(context.Context, string) (TrackerAssignmentState, error)
+
+// ReconciliationResult records the durable rows retired by a tracker pass.
+type ReconciliationResult struct {
+	Retired []*Assignment
+}
+
+// ReconcileTracker retires active durable rows only when the authoritative
+// tracker says their bead is terminal or their claim no longer exists. A
+// tracker read failure leaves every durable row unchanged.
+func (s *AssignmentStore) ReconcileTracker(ctx context.Context, lookup TrackerAssignmentLookup) (ReconciliationResult, error) {
+	if lookup == nil {
+		return ReconciliationResult{}, errors.New("assignment tracker lookup is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	candidates := s.ListActive()
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].BeadID < candidates[j].BeadID })
+	targets := make([]struct {
+		assignment *Assignment
+		reason     string
+	}, 0, len(candidates))
+
+	for _, candidate := range candidates {
+		state, err := lookup(ctx, candidate.BeadID)
+		if err != nil {
+			return ReconciliationResult{}, fmt.Errorf("read tracker state for %s: %w", candidate.BeadID, err)
+		}
+		if reason, retire := assignmentRetirementReason(candidate, state); retire {
+			targets = append(targets, struct {
+				assignment *Assignment
+				reason     string
+			}{assignment: candidate, reason: reason})
+		}
+	}
+
+	result := ReconciliationResult{Retired: make([]*Assignment, 0, len(targets))}
+	for _, target := range targets {
+		retired, applied, err := s.retireIfCurrent(ctx, target.assignment, target.reason)
+		if err != nil {
+			return result, err
+		}
+		if applied {
+			result.Retired = append(result.Retired, retired)
+		}
+	}
+	return result, nil
+}
+
+func assignmentRetirementReason(candidate *Assignment, state TrackerAssignmentState) (string, bool) {
+	status := strings.ToLower(strings.TrimSpace(state.Status))
+	assignee := strings.TrimSpace(state.Assignee)
+	switch status {
+	case "closed", "tombstone":
+		return "tracker status " + status, true
+	case "open":
+		if assignee == "" {
+			return "tracker claim released", true
+		}
+	case "in_progress":
+		if assignee == "" {
+			return "tracker claim released", true
+		}
+		if actor := strings.TrimSpace(candidate.ClaimActor); actor != "" && assignee != actor {
+			return "tracker claim no longer held by " + actor, true
+		}
+	}
+	return "", false
+}
+
+func (s *AssignmentStore) retireIfCurrent(ctx context.Context, observed *Assignment, reason string) (*Assignment, bool, error) {
+	if observed == nil || strings.TrimSpace(observed.BeadID) == "" {
+		return nil, false, errors.New("observed assignment generation is required")
+	}
+	operationUnlock, err := acquireAtomicBeadOperationLock(ctx, s.path, observed.BeadID)
+	if err != nil {
+		return nil, false, fmt.Errorf("lock assignment retirement %s: %w", observed.BeadID, err)
+	}
+	defer operationUnlock()
+	if err := s.LoadStrict(); err != nil {
+		return nil, false, fmt.Errorf("refresh assignment retirement %s: %w", observed.BeadID, err)
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	current := s.Assignments[observed.BeadID]
+	if !SameAssignmentGeneration(observed, current) || current.ClearState != ClearStateNone || !assignmentStatusIsActive(current.Status) {
+		return nil, false, nil
+	}
+	if current.DispatchState == DispatchSending {
+		return nil, false, fmt.Errorf("%w: cannot retire %s while dispatch outcome is unknown", ErrDispatchOutcomeUnknown, observed.BeadID)
+	}
+
+	previous := cloneAssignment(current)
+	now := time.Now().UTC()
+	current.Status = StatusRetired
+	current.RetiredAt = &now
+	current.RetiredReason = reason
+	if s.replace == nil {
+		s.replace = make(map[string]struct{})
+	}
+	s.replace[observed.BeadID] = struct{}{}
+	if err := s.saveLocked(); err != nil {
+		var concurrentMutation *ConcurrentMutationError
+		if errors.As(err, &concurrentMutation) {
+			return nil, false, nil
+		}
+		s.Assignments[observed.BeadID] = previous
+		delete(s.replace, observed.BeadID)
+		return nil, false, err
+	}
+	return cloneAssignment(current), true, nil
+}
+
+func assignmentStatusIsActive(status AssignmentStatus) bool {
+	switch status {
+	case StatusClaiming, StatusClaimed, StatusAssigned, StatusWorking:
+		return true
+	default:
+		return false
+	}
 }
 
 // BeginClear persists a cross-process barrier before external reservation
@@ -2274,6 +2428,36 @@ func (s *AssignmentStore) Stats() AssignmentStats {
 
 	stats := AssignmentStats{}
 	for _, a := range s.Assignments {
+		stats.Total++
+		switch a.Status {
+		case StatusClaimed:
+			stats.Claimed++
+		case StatusAssigned:
+			stats.Assigned++
+		case StatusWorking:
+			stats.Working++
+		case StatusCompleted:
+			stats.Completed++
+		case StatusFailed:
+			stats.Failed++
+		case StatusReassigned:
+			stats.Reassigned++
+		}
+	}
+	return stats
+}
+
+// VisibleStats summarizes the rows default assignment surfaces expose. Retired
+// rows stay in the durable ledger, but do not inflate current-work summaries.
+func (s *AssignmentStore) VisibleStats() AssignmentStats {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	stats := AssignmentStats{}
+	for _, a := range s.Assignments {
+		if a.Status == StatusRetired {
+			continue
+		}
 		stats.Total++
 		switch a.Status {
 		case StatusClaimed:

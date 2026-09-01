@@ -270,14 +270,14 @@ func init() {
 // Empty filterStatus or filterAgent means no filtering on that field.
 // filterPane < 0 means no filtering on pane.
 func filterAssignments(assignments []*assignment.Assignment, filterStatus, filterAgent string, filterPane int) []*assignment.Assignment {
-	if filterStatus == "" && filterAgent == "" && filterPane < 0 {
+	if (filterStatus == "" || filterStatus == "all") && filterAgent == "" && filterPane < 0 {
 		return assignments // No filtering needed
 	}
 
 	result := make([]*assignment.Assignment, 0, len(assignments))
 	for _, a := range assignments {
 		// Filter by status
-		if filterStatus != "" && string(a.Status) != filterStatus {
+		if filterStatus != "" && filterStatus != "all" && string(a.Status) != filterStatus {
 			continue
 		}
 		// Filter by agent type
@@ -829,7 +829,12 @@ func buildStatusResponse(ctx context.Context, session string, opts statusOptions
 
 	// Add assignments if requested (with optional filtering)
 	if needAssignments && assignmentStore != nil {
-		assignments := assignmentStore.List()
+		var assignments []*assignment.Assignment
+		if opts.filterStatus == "retired" || opts.filterStatus == "all" {
+			assignments = assignmentStore.List()
+		} else {
+			assignments = assignmentStore.ListVisible()
+		}
 		// Apply filters
 		assignments = filterAssignments(assignments, opts.filterStatus, opts.filterAgent, opts.filterPane)
 		// Include individual assignments unless --summary is used
@@ -860,7 +865,7 @@ func buildStatusResponse(ctx context.Context, session string, opts statusOptions
 				resp.Assignments = append(resp.Assignments, assignResp)
 			}
 		}
-		stats := assignmentStore.Stats()
+		stats := assignmentStore.VisibleStats()
 		resp.AssignmentStats = &output.AssignmentStats{
 			Total:      stats.Total,
 			Assigned:   stats.Assigned,
@@ -939,7 +944,7 @@ func newStatusCmd() *cobra.Command {
 - Bead assignments (with --assignments flag)
 
 Assignment Filtering (requires --assignments):
-  --status=<status>  Filter by: assigned, working, completed, failed, reassigned
+  --status=<status>  Filter by: assigned, working, completed, failed, reassigned, retired, all
   --agent=<type>     Filter by: claude, codex, gemini
   --pane=<n>         Filter by pane number
   --summary          Show aggregated statistics only
@@ -1483,7 +1488,12 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 		fmt.Fprintf(w, "  %sAssignments%s\n", bold, reset)
 		fmt.Fprintf(w, "  %s%s%s\n", surface, "─────────────────────────────────────────────────────────", reset)
 
-		assignments := filterAssignments(assignmentStore.List(), opts.filterStatus, opts.filterAgent, opts.filterPane)
+		var assignments []*assignment.Assignment
+		if opts.filterStatus == "retired" || opts.filterStatus == "all" {
+			assignments = filterAssignments(assignmentStore.List(), opts.filterStatus, opts.filterAgent, opts.filterPane)
+		} else {
+			assignments = filterAssignments(assignmentStore.ListVisible(), opts.filterStatus, opts.filterAgent, opts.filterPane)
+		}
 
 		// If --summary, skip individual listings
 		if !opts.showSummary {
@@ -1515,6 +1525,9 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 					case assignment.StatusReassigned:
 						statusIcon = "→"
 						statusColor = subtext
+					case assignment.StatusRetired:
+						statusIcon = "⊘"
+						statusColor = overlay
 					default:
 						statusIcon = "?"
 						statusColor = overlay
@@ -1555,7 +1568,7 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 		}
 
 		// Show stats
-		stats := assignmentStore.Stats()
+		stats := assignmentStore.VisibleStats()
 		if stats.Total > 0 {
 			fmt.Fprintln(w)
 			fmt.Fprintf(w, "    %sStats:%s %sTotal:%s %d  %sWorking:%s %d  %sCompleted:%s %d  %sFailed:%s %d\n",

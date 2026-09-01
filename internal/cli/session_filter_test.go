@@ -138,6 +138,39 @@ func TestFilterByStatusReassigned(t *testing.T) {
 	}
 }
 
+func TestFilterByStatusRetired(t *testing.T) {
+	assignments := []*assignment.Assignment{
+		makeTestAssignment("bd-001", "claude", 1, assignment.StatusRetired),
+		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
+		makeTestAssignment("bd-003", "gemini", 3, assignment.StatusRetired),
+	}
+
+	result := filterAssignments(assignments, "retired", "", -1)
+
+	if len(result) != 2 {
+		t.Errorf("Expected 2 retired assignments, got %d", len(result))
+	}
+	for _, a := range result {
+		if a.Status != assignment.StatusRetired {
+			t.Errorf("Expected status 'retired', got %q", a.Status)
+		}
+	}
+}
+
+func TestFilterByStatusAll(t *testing.T) {
+	assignments := []*assignment.Assignment{
+		makeTestAssignment("bd-001", "claude", 1, assignment.StatusRetired),
+		makeTestAssignment("bd-002", "codex", 2, assignment.StatusWorking),
+		makeTestAssignment("bd-003", "gemini", 3, assignment.StatusAssigned),
+	}
+
+	result := filterAssignments(assignments, "all", "", -1)
+
+	if len(result) != 3 {
+		t.Errorf("Expected 3 assignments with status 'all', got %d", len(result))
+	}
+}
+
 func TestFilterByStatusInvalid(t *testing.T) {
 	assignments := []*assignment.Assignment{
 		makeTestAssignment("bd-001", "claude", 1, assignment.StatusWorking),
