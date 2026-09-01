@@ -23,6 +23,10 @@ func (c *countingPromptInjectionTmuxClient) CaptureForStatusDetectionContext(con
 	return "", nil
 }
 
+func (c *countingPromptInjectionTmuxClient) CapturePaneOutputContext(context.Context, string, int) (string, error) {
+	return "", nil
+}
+
 func (c *countingPromptInjectionTmuxClient) GetPanes(string) ([]tmux.Pane, error) {
 	c.getPanesCount++
 	return nil, nil
