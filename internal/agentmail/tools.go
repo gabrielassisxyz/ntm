@@ -1348,8 +1348,10 @@ func (c *Client) ListAgents(ctx context.Context, projectKey string) ([]Agent, er
 func (c *Client) ForceReleaseReservation(ctx context.Context, opts ForceReleaseOptions) (*ForceReleaseResult, error) {
 	args := map[string]interface{}{
 		"project_key":         opts.ProjectKey,
-		"agent_name":          opts.AgentName,
 		"file_reservation_id": opts.ReservationID,
+	}
+	if opts.AgentName != "" {
+		args["agent_name"] = opts.AgentName
 	}
 	if opts.Note != "" {
 		args["note"] = opts.Note

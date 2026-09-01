@@ -1136,9 +1136,10 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 	// Approval gate (bd-2y2on): the policy's automation.force_release knob
 	// governs this command. It is evaluated BEFORE any Agent Mail plumbing,
 	// and --yes never bypasses it (--yes only skips the cosmetic local
-	// confirmation prompt below). Requester identity is the same
-	// NTM_USER||USER resolution `ntm approve` records (getCurrentApprover).
-	requester := getCurrentApprover()
+	// confirmation prompt below). Resolve the requester before evaluating the
+	// gate so the durable approval record distinguishes agent sessions sharing
+	// one OS login; when no agent identity exists it falls back to that login.
+	requester := resolveSLBApprovalIdentity(resolveLockAgentName(ctx, session, projectKey, agent))
 	pol, err := policy.LoadOrDefault()
 	if err != nil {
 		return forceReleaseGateError(session, reservationID, fmt.Errorf("loading policy for force-release gate: %w", err))
@@ -1209,8 +1210,14 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 		fmt.Println(decision.Message)
 	}
 
-	agentName := resolveLockAgentName(ctx, session, projectKey, agent)
-	if agentName == "" {
+	// A deliberate auto policy authorizes a human operator shell as well as an
+	// Agent Mail session. With no explicit --agent, omit agent_name entirely so
+	// Agent Mail does not demand a registration token for a guessed identity.
+	agentName := strings.TrimSpace(agent)
+	if decision.ApprovalStatus != "auto" || agentName != "" {
+		agentName = resolveLockAgentName(ctx, session, projectKey, agent)
+	}
+	if agentName == "" && decision.ApprovalStatus != "auto" {
 		if IsJSONOutput() {
 			result := ForceReleaseResult{Success: false, Session: session, ReservationID: reservationID, ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus, Error: noSessionAgentIdentityError(session).Error()}
 			enc := json.NewEncoder(os.Stdout)
