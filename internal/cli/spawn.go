@@ -3556,9 +3556,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// goroutines have all joined (setupWg.Wait above).
 		lifecyclePartialMutation = true
 		lifecycleSessionMayExist = true
-		for _, paneID := range failedPaneIDs {
-			lifecycleAffectedPaneIDs = append(lifecycleAffectedPaneIDs, paneID)
-		}
+		lifecycleAffectedPaneIDs = append(lifecycleAffectedPaneIDs, failedPaneIDs...)
 	}
 
 	if maxStaggerDelay > 0 {
