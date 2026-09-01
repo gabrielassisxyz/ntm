@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // TestAgyIdleAtPromptAcceptsDirectAssignWithoutForce is the bd-my3
@@ -290,5 +292,93 @@ func TestAgyIdleProductionShapeFixturePinsStatusArm(t *testing.T) {
 	}
 	if !pane.SafeToDispatch() {
 		t.Fatalf("pane SafeToDispatch() = false on a production-shape idle agy pane; the assign path would print `pane is busy (state: %s), use --force to override`", pane.Current.Status.State)
+	}
+}
+
+// newAgyHighVelocitySessionObserver builds a SessionObserver over a single
+// agy pane whose LastActivity equals observedAt (high velocity). The
+// default newAgySessionObserver pins LastActivity to one minute before
+// observedAt (low velocity) so the fallback `if isAtPrompt &&
+// isLowVelocity` chain returns StateIdle for the same fixture. The
+// high-velocity variant forces that fallback off, so a StateIdle verdict
+// depends entirely on the unified.go agy arm — a regression of the arm
+// returns StateWorking instead, which is what the
+// TestAgyIdleProductionShapeFixturePinsUnifiedDetectorArm assertion
+// catches.
+func newAgyHighVelocitySessionObserver(observedAt time.Time, capture string) *statuspkg.SessionObserver {
+	detector := statuspkg.NewDetector()
+	return statuspkg.NewSessionObserverWithDependencies(
+		detector,
+		statuspkg.DefaultSessionObserverConfig(detector.Config()),
+		statuspkg.SessionObserverDependencies{
+			ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
+				return []tmux.PaneActivity{{
+					Pane:         tmux.Pane{ID: "%92", Index: 92, Title: "demo__agy_92", Type: tmux.AgentAntigravity},
+					LastActivity: observedAt,
+				}}, nil
+			},
+			CapturePane: func(_ context.Context, _ string, _ int) (string, error) {
+				return capture, nil
+			},
+			Now: func() time.Time { return observedAt },
+		},
+	)
+}
+
+// TestAgyIdleProductionShapeFixturePinsUnifiedDetectorArm is the bd-my3
+// review follow-up: the unified.go agy arm (in determineStateAt) must
+// be the only thing that returns StateIdle for a high-velocity
+// production-shape fixture. With lastActivity == observedAt, the
+// existing fallback `if isAtPrompt && isLowVelocity` does not fire
+// (isLowVelocity is false), so a healthy pane the parser reports as
+// working (chevron past the parser's 5-line idle window, with "running"
+// keywords in scrollback) resolves to StateIdle ONLY when the
+// unified.go agy arm fires.
+//
+// WITHOUT the unified.go arm: state=working (recent-activity
+// short-circuit). The dispatch gate then refuses the pane.
+//
+// WITH the unified.go arm: state=idle. observationConfidence returns
+// 0.95 because DetectIdleFromOutput (the patterns.go agy arm, kept) sees
+// the chevron via agyTuiPromptShowing.
+//
+// This test binds specifically to the unified.go arm. The earlier
+// TestAgyIdleProductionShapeFixturePinsStatusArm uses low velocity, so
+// the fallback chain returns StateIdle there regardless of whether the
+// unified.go arm is present.
+func TestAgyIdleProductionShapeFixturePinsUnifiedDetectorArm(t *testing.T) {
+	observedAt := time.Now().UTC()
+	detector := statuspkg.NewDetector()
+
+	// High velocity: lastActivity == observedAt, well within the 5-second
+	// ActivityThreshold. Without the unified.go arm, the fallback chain
+	// `if isAtPrompt && isLowVelocity` short-circuits at the recent-
+	// activity guard and returns StateWorking, regardless of DetectIdle.
+	res := detector.AnalyzeAt("%92", "demo__agy_92", "agy", agyChevronBeyondFooterCapture, observedAt, observedAt)
+	if res.State != statuspkg.StateIdle {
+		t.Fatalf("AnalyzeAt(agy, chevron-beyond-window, high-velocity) state = %s, want idle — without the unified.go agy arm, the recent-activity guard returns StateWorking even though the chevron is in the output", res.State)
+	}
+
+	// And the chain's downstream observation: with state=idle and
+	// DetectIdleFromOutput=true (the patterns.go arm catches the chevron
+	// via agyTuiPromptShowing), observationConfidence returns 0.95. The
+	// dispatch gate then authorizes the assign.
+	obs := newAgyHighVelocitySessionObserver(observedAt, agyChevronBeyondFooterCapture)
+	observation, err := obs.Observe(t.Context(), "demo")
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	pane, ok := observation.PaneByID("%92")
+	if !ok {
+		t.Fatal("observed pane missing")
+	}
+	if pane.Current.Status.State != statuspkg.StateIdle {
+		t.Fatalf("pane state = %s, want idle — without the unified.go arm, a high-velocity production-shape pane the parser reports as working resolves to StateWorking and the gate refuses the assign", pane.Current.Status.State)
+	}
+	if pane.Current.Confidence < statuspkg.MinimumDispatchConfidence {
+		t.Fatalf("pane confidence = %.2f, want >= %.2f — observationConfidence drops to 0.5 when state=idle but the patterns.go arm's chevron scan disagreed (this fixture exercises both arms)", pane.Current.Confidence, statuspkg.MinimumDispatchConfidence)
+	}
+	if !pane.SafeToDispatch() {
+		t.Fatalf("SafeToDispatch = false on a healthy high-velocity agy pane; without the unified.go arm the state would be working and the gate would refuse")
 	}
 }
